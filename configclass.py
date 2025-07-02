@@ -10,6 +10,20 @@ def _is_dunder(name):
     )
 
 
+class field:
+    '''Managed config field.'''
+    def __init__(self, default):
+        self.default = default
+
+
+class typed_field(field):
+    '''Field that will always be cast to a particular type.'''
+    def __init__(self, default, type_, allow_none=True):
+        self.default = default
+        self.type_ = type_
+        self.allow_none = allow_none
+
+
 class nonfield:
     '''Prevents item from becoming managed config field.'''
     def __init__(self, value):
@@ -23,11 +37,11 @@ class ConfigMeta(type):
     def __new__(cls, clsname, bases, clsdict):
         # Set up __fields__ listing valid config fields and their default
         # values.
-        field_names = {
+        field_names = [
             name for name, value in clsdict.items()
-            if not _is_dunder(name)
+            if not name.startswith('_')
             and not isinstance(value, nonfield)
-        }
+        ]
         clsdict['__fields__'] = OrderedDict([
             (name, clsdict.pop(name)) for name in field_names
         ])
@@ -44,6 +58,7 @@ class ConfigMeta(type):
         clsdict['values'] = cls._values_
         clsdict['items'] = cls._items_
         clsdict['__iter__'] = cls._iter_
+        clsdict['__setattr__'] = cls._setattr_
         clsdict['__repr__'] = cls._repr_
 
         obj = super().__new__(cls, clsname, bases, clsdict)
@@ -52,8 +67,8 @@ class ConfigMeta(type):
     def __call__(cls, *args, **kwargs):
         obj = cls.__new__(cls, *args, **kwargs)
 
-        for name, default in cls.__fields__.items():
-            setattr(obj, name, default)
+        for name, field_ in cls.__fields__.items():
+            setattr(obj, name, field_.default)
         for name, value in kwargs.items():
             if name in cls.__fields__:
                 setattr(obj, name, value)
@@ -69,12 +84,12 @@ class ConfigMeta(type):
 
     def _update_(self, **kwargs):
             '''TODO'''
-            for field, value in kwargs.items():
-                if field in self.__fields__:
-                    setattr(self, field, value)
+            for name, value in kwargs.items():
+                if name in self.__fields__:
+                    setattr(self, name, value)
                 else:
                     raise AttributeError(
-                        f"{repr(type(self))} object has no config field {repr(field)}"
+                        f"{repr(type(self))} object has no config field {repr(name)}"
                     )
 
     def _to_dict_(self):
@@ -86,7 +101,7 @@ class ConfigMeta(type):
         return self.__fields__.keys()
 
     def _values_(self):
-        return (getattr(self, field) for field in self.keys())
+        return (getattr(self, name) for name in self.keys())
 
     def _items_(self):
         return zip(self.keys(), self.values())
@@ -94,10 +109,24 @@ class ConfigMeta(type):
     def _iter_(self):
         return self.keys()
 
+    def _setattr_(self, key, value):
+        if key in self.__fields__:
+            field_ = self.__fields__[key]
+            if (
+                    isinstance(field_, typed_field)
+                    and (value is not None or not field_.allow_none)
+            ):
+                value = field_.type_(value)
+
+        object.__setattr__(self, key, value)
+
     def _repr_(self):
         return "<{}: {{{}}}>".format(
             self.__class__.__name__,
-            ", ".join(f"{f}: {repr(v)}" for f, v in self.to_dict().items())
+            ", ".join(
+                f"{name}: {repr(getattr(self, name))}"
+                for name in self.__fields__
+            )
         )
 
 
