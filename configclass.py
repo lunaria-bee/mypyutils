@@ -44,6 +44,7 @@ class ConfigMeta(type):
         clsdict['values'] = cls._values_
         clsdict['items'] = cls._items_
         clsdict['__iter__'] = cls._iter_
+        clsdict['__eq__'] = cls._eq_
         clsdict['__repr__'] = cls._repr_
 
         obj = super().__new__(cls, clsname, bases, clsdict)
@@ -93,6 +94,13 @@ class ConfigMeta(type):
 
     def _iter_(self):
         return self.keys()
+
+    def _eq_(self, other):
+        if isinstance(other, type(self)) or isinstance(self, type(other)):
+            return all(
+                self[field] == other[field]
+                for field in self.__fields__.keys()
+            )
 
     def _repr_(self):
         return "<{}: {{{}}}>".format(
