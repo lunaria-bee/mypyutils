@@ -35,14 +35,14 @@ NO_DEFAULT = object()
 
 class ConfigMeta(type):
     def __new__(cls, clsname, bases, clsdict):
-        # Set up __fields__ listing valid config fields and their default
+        # Set up __fields listing valid config fields and their default
         # values.
         field_names = [
             name for name, value in clsdict.items()
             if not name.startswith('_')
             and not isinstance(value, nonfield)
         ]
-        clsdict['__fields__'] = OrderedDict([
+        clsdict['__fields'] = OrderedDict([
             (name, clsdict.pop(name)) for name in field_names
         ])
 
@@ -68,10 +68,10 @@ class ConfigMeta(type):
     def __call__(cls, *args, **kwargs):
         obj = cls.__new__(cls, *args, **kwargs)
 
-        for name, field_ in cls.__fields__.items():
+        for name, field_ in cls.__fields.items():
             setattr(obj, name, field_.default)
         for name, value in kwargs.items():
-            if name in cls.__fields__:
+            if name in cls.__fields:
                 setattr(obj, name, value)
 
         obj.__init__(*args, **kwargs)
@@ -86,7 +86,7 @@ class ConfigMeta(type):
     def _update_(self, **kwargs):
             '''TODO'''
             for name, value in kwargs.items():
-                if name in self.__fields__:
+                if name in self.__fields:
                     setattr(self, name, value)
                 else:
                     raise AttributeError(
@@ -95,11 +95,11 @@ class ConfigMeta(type):
 
     def _to_dict_(self):
         return {
-            name: getattr(self, name) for name in self.__fields__
+            name: getattr(self, name) for name in self.__fields
         }
 
     def _keys_(self):
-        return self.__fields__.keys()
+        return self.__fields.keys()
 
     def _values_(self):
         return (getattr(self, name) for name in self.keys())
@@ -111,8 +111,8 @@ class ConfigMeta(type):
         return self.keys()
 
     def _setattr_(self, key, value):
-        if key in self.__fields__:
-            field_ = self.__fields__[key]
+        if key in self.__fields:
+            field_ = self.__fields[key]
             if (
                     isinstance(field_, typed_field)
                     and (value is not None or not field_.allow_none)
@@ -125,7 +125,7 @@ class ConfigMeta(type):
         if isinstance(other, type(self)) or isinstance(self, type(other)):
             return all(
                 self[field] == other[field]
-                for field in self.__fields__.keys()
+                for field in self.__fields.keys()
             )
 
     def _repr_(self):
@@ -133,9 +133,9 @@ class ConfigMeta(type):
             self.__class__.__name__,
             ", ".join(
                 f"{name}: {repr(getattr(self, name))}"
-                for name in self.__fields__
+                for name in self.__fields
             )
         )
 
 
-class ConfigClass(metaclass=ConfigMeta): pass
+class Config(metaclass=ConfigMeta): pass
