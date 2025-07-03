@@ -35,16 +35,20 @@ NO_DEFAULT = object()
 
 class ConfigMeta(type):
     def __new__(cls, clsname, bases, clsdict):
-        # Set up __fields listing valid config fields and their default
+        # Set up _fields listing valid config fields and their default
         # values.
         field_names = [
             name for name, value in clsdict.items()
             if not name.startswith('_')
             and not isinstance(value, nonfield)
         ]
-        clsdict['__fields'] = OrderedDict([
-            (name, clsdict.pop(name)) for name in field_names
-        ])
+        clsdict['_fields'] = OrderedDict()
+        for name in field_names:
+            obj = clsdict.pop(name)
+            if isinstance(obj, field):
+                clsdict['_fields'][name] = obj
+            else:
+                clsdict['_fields'][name] = field(obj)
 
         # Resolve nonfield class attrs.
         for name in clsdict:
@@ -68,13 +72,22 @@ class ConfigMeta(type):
     def __call__(cls, *args, **kwargs):
         obj = cls.__new__(cls, *args, **kwargs)
 
-        for name, field_ in cls.__fields.items():
+        for name, field_ in cls._fields.items():
             setattr(obj, name, field_.default)
         for name, value in kwargs.items():
-            if name in cls.__fields:
+            if name in cls._fields:
                 setattr(obj, name, value)
 
         obj.__init__(*args, **kwargs)
+
+        unset_no_default = [
+            name for name in cls._fields
+            if getattr(obj, name) is NO_DEFAULT
+        ]
+        if unset_no_default:
+            raise ValueError(
+                "Unset NO_DEFAULT fields {}".format(", ".join(unset_no_default))
+            )
 
         return obj
 
@@ -86,7 +99,7 @@ class ConfigMeta(type):
     def _update_(self, **kwargs):
             '''TODO'''
             for name, value in kwargs.items():
-                if name in self.__fields:
+                if name in self._fields:
                     setattr(self, name, value)
                 else:
                     raise AttributeError(
@@ -95,11 +108,11 @@ class ConfigMeta(type):
 
     def _to_dict_(self):
         return {
-            name: getattr(self, name) for name in self.__fields
+            name: getattr(self, name) for name in self._fields
         }
 
     def _keys_(self):
-        return self.__fields.keys()
+        return self._fields.keys()
 
     def _values_(self):
         return (getattr(self, name) for name in self.keys())
@@ -111,8 +124,8 @@ class ConfigMeta(type):
         return self.keys()
 
     def _setattr_(self, key, value):
-        if key in self.__fields:
-            field_ = self.__fields[key]
+        if key in self._fields:
+            field_ = self._fields[key]
             if (
                     isinstance(field_, typed_field)
                     and (value is not None or not field_.allow_none)
@@ -125,7 +138,7 @@ class ConfigMeta(type):
         if isinstance(other, type(self)) or isinstance(self, type(other)):
             return all(
                 self[field] == other[field]
-                for field in self.__fields.keys()
+                for field in self._fields.keys()
             )
 
     def _repr_(self):
@@ -133,7 +146,7 @@ class ConfigMeta(type):
             self.__class__.__name__,
             ", ".join(
                 f"{name}: {repr(getattr(self, name))}"
-                for name in self.__fields
+                for name in self._fields
             )
         )
 
