@@ -1,3 +1,6 @@
+# Documentation output
+docs/_build/
+
 # Emacs backup files
 *~
 

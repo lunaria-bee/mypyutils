@@ -1,1 +1,3 @@
-from .configclass import *
+'''Python code I often reuse.'''
+
+from . import config
