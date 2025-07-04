@@ -27,10 +27,9 @@ extensions = [
 autoapi_type = 'python'
 autoapi_dirs = ['..']
 autoapi_ignore = [
+    '*/.*/*',
     '*/docs/*',
-    '*/.git/*',
     '*/__pycache__/*',
-    '*/.venv/*',
 ]
 autoapi_add_toctree_entry = False
 autoapi_python_use_implicit_namespaces = True
