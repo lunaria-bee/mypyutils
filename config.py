@@ -66,6 +66,25 @@ type. You can prevent a member from becoming a field by wrapping it in the
             decorator, although I feel like you really probably shouldn't :/\'\'\'
             pass
 
+Config classes provide the following methods automatically:
+
+- ``__init__()``: Constructor that takes ``(config=None, **kwargs)``, where
+  ``config`` is an optional config object to inherit field values from and
+  ``**kwargs`` are keyword arguments assigning values to fields.
+- ``update()``: Assign config field values from keyword arguments.
+- ``to_dict()``: Get a dict representation of the config fields.
+- ``keys()``: Iterate through config field names.
+- ``values()``: Iterate through config field values.
+- ``items()``: Iterate through config field (name, value) pairs.
+- ``defaults()``: Iterate through config field (name, default) pairs.
+- ``__iter__()``: :func:`iter()` override. Returns ``.keys()``.
+- ``__setattr__()``: :func:`setattr()` override, to handle :class:`typed_field` s.
+- ``__eq__()``: ``==`` override. Considers two config objects equal
+  if-and-only-if their config field values are equal.
+- ``__repr__()``: :func:`repr()` override. Config class type name plus a
+  dictionary representation of field values, in the same order they were defined
+  in the class definition.
+
 .. important::
 
     The special behavior described for the types and objects in this module
