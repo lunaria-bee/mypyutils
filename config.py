@@ -8,15 +8,19 @@ Make a config class by either inheriting from :class:`Config` (preferred) or
 setting :class:`ConfigMeta` as the class' metaclass.
 
 Even though config fields are initialized per object, they should not be defined
-in :func:`__init__()`. Instead, config fields should be defined at the class level, to
-make them visible to the metaclass constructor:
+in :func:`__init__()`. Instead, config fields should be defined at the class
+level, to make them visible to the metaclass constructor. Config field
+definitions take the form ``name = default_value``. If you do not which to give
+a field a default value, you may simply give it a default value of ``None``, or
+use :const:``NO_DEFAULT`` to require callers to assign that field a value upon
+object instantiation.
 
 .. code-block:: python
 
     class ExampleConfig(Config):
         source = Path.home()
-        target = Path('/tmp')
-        maxdepth = 3
+        target = typed_field(NO_DEFAULT, Path)
+        maxdepth = None
 
 By default, class members are made into config fields if they fulfill both of
 the following:
@@ -86,6 +90,14 @@ Config classes provide the following methods automatically:
   in the class definition.
 
 .. important::
+
+    When instantiating an object of a config class, fields receive their default
+    values (and :const:`NO_DEFAULT` is enforced) after executing the class`
+    ``__new__()`` and before executing the class' ``__init__()``. Keep this in
+    mind if you override these methods to customize config object creation. See
+    ``ConfigMeta.__call__()`` for more.
+
+.. note::
 
     The special behavior described for the types and objects in this module
     (:class:`field`, :class:`typed_field`, :const:`NO_DEFAULT`, etc.) will
@@ -272,9 +284,6 @@ class ConfigMeta(type):
 
         for name, field_ in cls._fields.items():
             setattr(obj, name, field_.default)
-        for name, value in kwargs.items():
-            if name in cls._fields:
-                setattr(obj, name, value)
 
         obj.__init__(*args, **kwargs)
 
@@ -293,5 +302,6 @@ class ConfigMeta(type):
 
 
 class Config(metaclass=ConfigMeta):
-    '''Convinence mixin class with :class:`ConfigMeta` as its metaclass.'''
+    '''Convinence class with :class:`ConfigMeta` as its metaclass, to allow
+    creating config classes by inheritance.'''
     pass
