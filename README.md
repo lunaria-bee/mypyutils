@@ -1,3 +1,3 @@
 # mypyutils
 
-Python code I often reuse.
+Python code I often reuse across projects.

@@ -1,3 +1,3 @@
-'''Python code I often reuse.'''
+'''Python code I often reuse across projects.'''
 
 from . import config
