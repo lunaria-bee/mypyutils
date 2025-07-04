@@ -299,8 +299,6 @@ class ConfigMeta(type):
         return obj
 
 
-
-
 class Config(metaclass=ConfigMeta):
     '''Convinence class with :class:`ConfigMeta` as its metaclass, to allow
     creating config classes by inheritance.'''
