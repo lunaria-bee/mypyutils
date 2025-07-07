@@ -10,16 +10,16 @@ setting :class:`ConfigMeta` as the class' metaclass.
 Even though config fields are initialized per object, they should not be defined
 in :func:`__init__()`. Instead, config fields should be defined at the class
 level, to make them visible to the metaclass constructor. Config field
-definitions take the form ``name = default_value``. If you do not which to give
+definitions take the form ``name = default_value``. If you do not wish to give
 a field a default value, you may simply give it a default value of ``None``, or
-use :const:``NO_DEFAULT`` to require callers to assign that field a value upon
+use :const:`NO_DEFAULT` to require callers to assign that field a value upon
 object instantiation.
 
 .. code-block:: python
 
     class ExampleConfig(Config):
         source = Path.home()
-        target = typed_field(NO_DEFAULT, Path)
+        target = NO_DEFAULT
         maxdepth = None
 
 By default, class members are made into config fields if they fulfill both of
@@ -34,7 +34,8 @@ the following:
 
 You can force a member to become a field by wrapping it in the :class:`field`
 type. You can prevent a member from becoming a field by wrapping it in the
-:class:`nonfield` type.
+:class:`nonfield` type. You can also create typed fields with the
+:class:`typed_field` wrapper.
 
 .. code-block:: python
 
@@ -52,8 +53,10 @@ type. You can prevent a member from becoming a field by wrapping it in the
 
         str_field = typed_field("Always a str.", str)
         non_null_field = typed_field("Cannot be None.", str, allow_none=False)
-        no_default_field = NO_DEFAULT # Must be assigned a value at object
-                                      # construction.
+        no_default_field = NO_DEFAULT
+            # ^Must be assigned a value when object is constructed.
+        typed_no_default = typed_field(NO_DEFAULT, Path)
+            # ^Typed fields can also be NO_DEFAULT.
 
         callable_field = Bar("Callable but not a function.")
         function_nonfield = foo
@@ -81,7 +84,12 @@ Config classes provide the following methods automatically:
 - ``values()``: Iterate through config field values.
 - ``items()``: Iterate through config field (name, value) pairs.
 - ``defaults()``: Iterate through config field (name, default) pairs.
+- ``default(name)``: Get default for a single config field.
 - ``__iter__()``: :func:`iter()` override. Returns ``.keys()``.
+- ``__getitem__()``: Index access override, to allow accessing field values by
+  name.
+- ``__setitem__()``: Index assignment override, to allow assigning field values
+  by name.
 - ``__setattr__()``: :func:`setattr()` override, to handle :class:`typed_field` s.
 - ``__eq__()``: ``==`` override. Considers two config objects equal
   if-and-only-if their config field values are equal.
@@ -91,11 +99,21 @@ Config classes provide the following methods automatically:
 
 .. important::
 
-    When instantiating an object of a config class, fields receive their default
-    values (and :const:`NO_DEFAULT` is enforced) after executing the class`
-    ``__new__()`` and before executing the class' ``__init__()``. Keep this in
-    mind if you override these methods to customize config object creation. See
-    ``ConfigMeta.__call__()`` for more.
+    .. dropdown:: Read this if you are planning to customize a config class's initialization logic by overriding ``__init__()`` and/or ``__new__()`` .
+
+        When initializing an instance of a config class, the following events happen
+        in the following order:
+
+        #. Call to ``__new__()``.
+        #. Fields receive default values.
+        #. Call to ``__init__()``.
+        #. :const:`NO_DEFAULT` is enforced.
+
+        The default ``__init__()`` handles assigning field values from constructor
+        keyword arguments. If you choose to override ``__init__()``, you will need
+        to make sure that all :const:`NO_DEFAULT` fields have been assigned a value
+        other than :const:`NO_DEFAULT` before ``__init__()`` exits, otherwise
+        ``ConfigMeta.__call__()`` will raise a :exc:`ValueError`.
 
 .. note::
 
@@ -159,9 +177,12 @@ NO_DEFAULT = _NoDefaultType()
 '''Special value that can be set as a field's default to indicate that it should
 not have a default value.
 
-If a config class has a field with ``NO_DEFAULT`` as
-its default value, all initializations of that class *must* provide a value for
-the field; failing to do so will result in a :exc:`ValueError`.
+If a config class has a field with ``NO_DEFAULT`` as its default value, all
+initializations of that class *must* provide a value for the field; failing to
+do so raises a :exc:`ValueError`.
+
+Attempting to assign ``NO_DEFAULT`` to a config field of an object that has
+already finished initializing raises a :exc:`ValueError`.
 
 '''
 
@@ -221,15 +242,38 @@ class _ConfigMethodsMixin:
         # Becomes defaults() method of new config class.
         return ((name, obj.default) for name, obj in self._fields.items())
 
+    def default(self, name):
+        '''Get default value of field by name.'''
+        return self._fields[name].default
+
     def __iter__(self):
         return self.keys()
 
+    def __getitem__(self, key):
+        if key in self._fields:
+            return getattr(self, key)
+        else:
+            raise KeyError(key)
+
+    def __setitem__(self, key, value):
+        if key in self._fields:
+            return setattr(self, key, value)
+        else:
+            raise KeyError(key)
+
     def __setattr__(self, key, value):
         if key in self._fields:
+            if value is NO_DEFAULT and not self._default_init:
+                raise ValueError(
+                    f"Attempt to assign NO_DEFAULT to field {repr(key)} after end of "
+                    f"{self.__class__.__name__} object initialization"
+                )
+
             field_ = self._fields[key]
             if (
                     isinstance(field_, typed_field)
                     and (value is not None or not field_.allow_none)
+                    and value is not NO_DEFAULT
             ):
                 value = field_.type_(value)
 
@@ -282,8 +326,10 @@ class ConfigMeta(type):
     def __call__(cls, *args, **kwargs):
         obj = cls.__new__(cls, *args, **kwargs)
 
+        obj._default_init = True
         for name, field_ in cls._fields.items():
             setattr(obj, name, field_.default)
+        obj._default_init = False
 
         obj.__init__(*args, **kwargs)
 
@@ -301,5 +347,6 @@ class ConfigMeta(type):
 
 class Config(metaclass=ConfigMeta):
     '''Convinence class with :class:`ConfigMeta` as its metaclass, to allow
-    creating config classes by inheritance.'''
+    creating config classes by inheritance. See module-level documentation for
+    details.'''
     pass

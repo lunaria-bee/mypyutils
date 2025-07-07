@@ -20,6 +20,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 extensions = [
     'autoapi.extension',
+    'sphinx_design',
     'sphinx.ext.intersphinx',
 ]
 
