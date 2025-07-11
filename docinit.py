@@ -54,6 +54,7 @@ html_sidebars = {
 '''
 
 GITIGNORE = '''# Documentation output
+autoapi/
 _build/
 '''
 
