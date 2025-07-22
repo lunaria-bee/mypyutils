@@ -236,15 +236,17 @@ class _ConfigMethodsMixin:
         # Becomes items() method of new config class.
         return zip(self.keys(), self.values())
 
-    def defaults(self):
+    @classmethod
+    def defaults(cls):
         '''Get an iterator over name-default pairs for this object's config
         fields.'''
         # Becomes defaults() method of new config class.
-        return ((name, obj.default) for name, obj in self._fields.items())
+        return ((name, obj.default) for name, obj in cls._fields.items())
 
-    def default(self, name):
+    @classmethod
+    def default(cls, name):
         '''Get default value of field by name.'''
-        return self._fields[name].default
+        return cls._fields[name].default
 
     def __iter__(self):
         return self.keys()
