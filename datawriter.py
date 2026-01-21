@@ -52,8 +52,8 @@ class DataWriter:
     def write(self, rowdict):
         '''TODO'''
         varnames = self.ivars + self.dvars
-        logging.debug("{{{}}}".format(
-            "\n".join(
+        logging.debug("{{\n{}\n}}".format(
+            "\n  ".join(
                 f"{repr(varname)}: {repr(rowdict[varname])}"
                 for varname in varnames
             )
