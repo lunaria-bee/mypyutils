@@ -32,7 +32,7 @@ class DataWriter:
 
         elif self.path.is_file():
             if exist_ok:
-                logging.debug(f"appending to {repr(self.path)}")
+                logging.info(f"appending to {repr(self.path)}")
                 with open(self.path, 'r') as f:
                     self.completed = set(
                         tuple(row[var] for var in self.ivars)
@@ -42,12 +42,12 @@ class DataWriter:
                 raise FileExistsError(f"{repr(self.path)} exists")
 
         else:
-            logging.debug(f"creating {repr(self.path)}")
+            logging.info(f"creating {repr(self.path)}")
             with open(self.path, 'w') as f:
                 csv.DictWriter(f, self.ivars + self.dvars).writeheader()
             self.completed = set()
 
-        logging.debug(f"self.completed={self.completed}")
+        logging.debug(f"self.completed={sorted(self.completed)}")
 
     def write(self, rowdict):
         '''TODO'''
