@@ -60,3 +60,5 @@ class DataWriter:
         ))
         with open(self.path, 'a') as f:
             csv.DictWriter(f, varnames).writerow(rowdict)
+
+        self.completed.add(tuple(rowdict[var] for var in self.ivars))
