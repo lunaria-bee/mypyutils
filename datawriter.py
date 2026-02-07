@@ -16,7 +16,7 @@ class DataWriter:
     ):
         '''TODO'''
         logging.debug(
-            f"\n  path={repr(path)}"
+            f"\n  path={repr(path)} ({path.absolute()})"
             f"\n  ivars={repr(ivars)}"
             f"\n  dvars={repr(dvars)}"
             f"\n  parents={repr(parents)}"
@@ -28,18 +28,18 @@ class DataWriter:
         self.dvars = tuple(dvars)
 
         if self.path.is_dir():
-            raise FileExistsError(f"{repr(self.path)} is a directory")
+            raise FileExistsError(f"{self.path.absolute()} is a directory")
 
         elif self.path.is_file():
             if exist_ok:
-                logging.info(f"appending to {repr(self.path)}")
+                logging.info(f"appending to {self.path.absolute()}")
                 with open(self.path, 'r') as f:
                     self.completed = set(
                         tuple(row[var] for var in self.ivars)
                         for row in csv.DictReader(f)
                     )
             else:
-                raise FileExistsError(f"{repr(self.path)} exists")
+                raise FileExistsError(f"{self.path.absolute()} exists")
 
         else:
             logging.info(f"creating {repr(self.path)}")
