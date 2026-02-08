@@ -16,7 +16,7 @@ class DataWriter:
     ):
         '''TODO'''
         logging.debug(
-            f"\n  path={repr(path)} ({path.absolute()})"
+            f"\n  path={repr(path)} ({Path(path).absolute()})"
             f"\n  ivars={repr(ivars)}"
             f"\n  dvars={repr(dvars)}"
             f"\n  parents={repr(parents)}"
