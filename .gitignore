@@ -4,6 +4,9 @@ docs/_build/
 # Emacs backup files
 *~
 
+# Test files
+test.py
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
