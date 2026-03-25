@@ -46,7 +46,7 @@ autoapi_options =  [
 
 # sphinx.ext.intersphinx
 intersphinx_mapping = {
-    'python': ('https://docs.python.org/3.10/', None),
+    'python': ('https://docs.python.org/3/', None),
 }
 
 templates_path = ['_templates']
