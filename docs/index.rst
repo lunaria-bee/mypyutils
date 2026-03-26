@@ -11,5 +11,6 @@ mypyutils
 
    autoapi/mypyutils/config/index
    autoapi/mypyutils/datawriter/index
+   autoapi/mypyutils/modelloader/index
    autoapi/mypyutils/timer/index
 
