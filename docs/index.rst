@@ -10,4 +10,6 @@ mypyutils
    :maxdepth: 2
 
    autoapi/mypyutils/config/index
+   autoapi/mypyutils/datawriter/index
+   autoapi/mypyutils/timer/index
 

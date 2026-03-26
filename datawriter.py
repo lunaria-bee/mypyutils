@@ -1,3 +1,5 @@
+'''Helper for writing experiment data.'''
+
 import csv
 import logging
 from pathlib import Path
