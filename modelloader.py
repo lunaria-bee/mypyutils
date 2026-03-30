@@ -2,7 +2,7 @@ from collections.abc import Collection, Iterable
 from os import PathLike
 from pathlib import Path
 from queue import Queue
-from threading import Thread
+from threading import Lock, Thread
 from transformers import AutoModel, AutoTokenizer, PreTrainedModel, PreTrainedTokenizer
 from typing import NamedTuple, Union
 
@@ -20,15 +20,34 @@ class ModelKey(NamedTuple):
 
     '''
 
+    @classmethod
+    def convert_from(cls, key: _KeyLike) -> ModelKey:
+        '''Convert ``key`` into a :class:`ModelKey`.'''
+        if isinstance(key, cls):
+            return key
 
-type _KeysArg = Union[
+        elif isinstance(key, str):
+            return cls(key, None)
+
+        elif isinstance(key, tuple) and len(key) == 2:
+            return cls(*key)
+
+        else:
+            raise ValueError(
+                f"Cannot interpret {repr(key)} as ModelKey"
+            )
+
+
+type _KeyLike = Union[
     ModelKey,
-    Iterable[Union[
-        ModelKey,
-        str,
-        tuple[str, Union[str, None]],
-    ]],
+    str,
+    tuple[str, Union[str, None]],
 ]
+'''Type for values that can be interpreted as :class:`ModelKey`s.'''
+
+type _Keys = Union[_KeyLike, Iterable[_KeyLike]]
+'''Type for valid arguments to function parameters that can accept one or more
+:class:`ModelKeys`.'''
 
 
 class ModelLoader:
@@ -48,14 +67,16 @@ class ModelLoader:
         self._cache_thread: Thread = Thread(target=self._cache_thread_fn)
         '''Thread managing model caching.'''
 
-        self._cache_queue: Queue[Union[
+        self._cache_msg_queue: Queue[Union[
             _ModelCacheCmd,
             _ModelCacheForStagingCmd,
         ]] = Queue()
-        ''':class:~queue.Queue~ of :class:`_ModelCmd`s for caching.'''
+        ''':attr:`_cache_thread` message queue.'''
 
         self._cache_complete: set[ModelKey] = set()
         ''':class:`ModelKey`s of cached models.'''
+
+        self._cache_complete_lock: Lock = Lock()
 
         self._stagedir: Path = Path(stagedir)
         '''Directory where models will be staged for loading to memory.'''
@@ -63,8 +84,8 @@ class ModelLoader:
         self._stage_thread: Thread = Thread(target=self._stage_thread_fn)
         '''Thread managing model staging.'''
 
-        self._stage_queue: Queue[_ModelStageCmd] = Queue()
-        ''':class:`~queue.Queue` of :class:`_ModelCmd`s for staging.'''
+        self._stage_msg_queue: Queue[_ModelStageCmd] = Queue()
+        ''':attr:`_stage_tbread` message queue.'''
 
         self._stage_complete: set[ModelKey] = set()
         ''':class:`ModelKey`s of staged models.'''
@@ -79,7 +100,7 @@ class ModelLoader:
         ''':attr:`_stagedir` accessor.'''
         return self._stagedir
 
-    def cache(self, keys: _KeysArg):
+    def cache(self, keys: _Keys):
         '''TODO'''
         if not isinstance(keys, Iterable):
             keys = [keys]
@@ -97,7 +118,7 @@ class ModelLoader:
             else:
                 raise ValueError(f"Invalid key type f{repr(type(key))}")
 
-    def stage(self, keys: _KeysArg):
+    def stage(self, keys: _Keys):
         '''TODO'''
         pass # TODO
 
@@ -137,7 +158,7 @@ class ModelLoader:
             # Else, stage all files.
 
 
-class _ModelCmdBase(NamedTuple):
+class _ModelMsgBase(NamedTuple):
     priority: int
     key: ModelKey
 
@@ -149,10 +170,8 @@ class _ModelCmdBase(NamedTuple):
     ):
         return cls(priority, key)
 
-
-class _ModelCacheCmd(_ModelCmdBase): pass
-class _ModelStageCmd(_ModelCmdBase): pass
-
+class _ModelCacheCmd(_ModelMsgBase): pass
+class _ModelStageCmd(_ModelMsgBase): pass
 
 class _ModelCacheForStagingCmd(NamedTuple):
     priority: int
