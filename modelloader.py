@@ -7,33 +7,62 @@ from queue import PriorityQueue
 import shutil
 import subprocess
 from threading import Event, Lock, Thread
-from transformers import AutoModel, AutoTokenizer
+from transformers import AutoModel, AutoTokenizer, PreTrainedModel, PreTrainedTokenizer
 from typing import NamedTuple, Union
+import unittest
 
 
 # TODO Handle inability to make requests due to HF rate limits. Look into how
 # load_from_pretrained determines what files it needs to load for a model,
 # especially when `local_files_only=True`.
 
+# TODO Unified way to log source and destination of passed messages upon sending
+# and receipt.
+
 
 _log = logging.getLogger(__name__)
+
+
+type _KeyLike = Union[
+    ModelKey,
+    str,
+    tuple[str, Union[str, None]],
+]
+'''Type for values that can be interpreted as :class:`ModelKey`s.'''
+
+
+type _Keys = Union[_KeyLike, Iterable[_KeyLike]]
+'''Type for valid arguments to function parameters that can accept one or more
+:class:`ModelKeys`.'''
+
+
+type _PathOrStr = Union[os.PathLike, str]
+'''Type for paths that are allowed to be represented as ``str``.'''
 
 
 class ModelKey(NamedTuple):
     '''Unique identifier for a model.'''
 
     hf_path: str
-    '''HuggingFace model path.'''
+    '''HuggingFace model path.
+
+    As passed to the ``pretrained_model_name_or_path`` argument of
+    :meth:`transformers.PreTrainedModel.from_pretrained()`.
+
+    '''
 
     revision: Union[str, None]
     '''Repo revision identifying a specific model checkpoint.
+
+    As passed to the ``revision`` argument of
+    :meth:`transformers.PreTrainedModel.from_pretrained()`.
 
     If ``None``, use the default revision.
 
     '''
 
     @classmethod
-    def convert_from(cls, key: _KeyLike) -> ModelKey:
+    def convert_from(cls, key: _KeyLike) -> 'ModelKey':
         '''Convert ``key`` into a :class:`ModelKey`.'''
         if isinstance(key, cls):
             return key
@@ -50,6 +79,73 @@ class ModelKey(NamedTuple):
             )
 
 
+def _normalize_keys_arg(keys) -> Iterable[ModelKey]:
+    if isinstance(keys, (ModelKey, str, tuple)):
+        return [ModelKey.convert_from(keys)]
+    else:
+        return [ModelKey.convert_from(key) for key in keys]
+
+
+_MSG_NORMAL_PRIORITY = 50
+_MSG_HIGH_PRIORITY = 0
+
+
+class _ModelLoaderTopLvlMsgBase(NamedTuple):
+    priority: int
+    key: ModelKey
+
+
+class _ModelLoaderInternalMsgBase(NamedTuple):
+    priority: int
+    key: ModelKey
+    files: Union[Iterable[_PathOrStr], None]
+
+
+class _ModelCacheCmd(_ModelLoaderTopLvlMsgBase): pass
+class _ModelStageCmd(_ModelLoaderTopLvlMsgBase): pass
+class _ModelCacheToStageCmd(_ModelLoaderInternalMsgBase): pass
+class _ModelStageToCacheCmd(_ModelLoaderInternalMsgBase): pass
+class _ModelDownloadForCachingCmd(_ModelLoaderInternalMsgBase): pass
+class _ModelDownloadForStagingCmd(_ModelLoaderInternalMsgBase): pass
+class _ModelDownloadForStagingCompleteMsg(_ModelLoaderInternalMsgBase): pass
+class _ModelUnstageCmd(_ModelLoaderInternalMsgBase): pass
+class _ModelCacheCompleteMsg(_ModelLoaderTopLvlMsgBase): pass
+class _ModelStageCompleteMsg(_ModelLoaderTopLvlMsgBase): pass
+class _ModelUnstageCompleteMsg(_ModelLoaderTopLvlMsgBase): pass
+
+class _ModelRegisterForStageCompleteCmd(NamedTuple):
+    priority: int
+    key: ModelKey
+    event: Event
+
+class _ThreadExitCmd: pass # TODO use
+
+
+type _MainMsg = Union[
+    _ModelCacheCmd,
+    _ModelStageCmd,
+    _ModelRegisterForStageCompleteCmd,
+    _ModelCacheCompleteMsg,
+    _ModelStageCompleteMsg,
+    _ModelUnstageCompleteMsg,
+]
+'''Messages that can be received by :class:`_MainThread`..'''
+
+type _NetMsg = Union[
+    _ModelDownloadForCachingCmd,
+    _ModelDownloadForStagingCmd,
+]
+'''Messages that can be received by :class:`_NetThread`.'''
+
+type _DiskMsg = Union[
+    _ModelCacheToStageCmd,
+    _ModelStageToCacheCmd,
+    _ModelDownloadForStagingCompleteMsg,
+    _ModelUnstageCmd,
+]
+'''Messages that can be received by :class:`_DiskThread`.'''
+
+
 class ModelLoader:
     '''TODO'''
 
@@ -57,7 +153,7 @@ class ModelLoader:
     # staging, as these are blocked by separate I/O resources (internet and
     # intranet, respectively).
 
-    def __init__(self, cachedir: _PathLike, stagedir: _PathLike):
+    def __init__(self, cachedir: _PathOrStr, stagedir: _PathOrStr):
         # TODO Way to set default model loading kwargs.
         # TODO Way to set default tokenizer loading kwargs.
 
@@ -123,17 +219,69 @@ class ModelLoader:
             key: _KeyLike,
             model_type=AutoModel,
             tokenizer_type=AutoTokenizer,
-    ):
+            device_map=None,
+    ) -> tuple[PreTrainedModel, PreTrainedTokenizer]:
         '''TODO'''
-        pass # TODO
+        key = ModelKey.convert_from(key)
 
-    def load_model(self, key: _KeyLike, model_type=AutoModel):
-        '''TODO'''
-        pass # TODO
+        self._ensure_stage(key)
 
-    def load_tokenizer(self, key: _KeyLike, tokenizer_type=AutoTokenizer):
+        model = self._load_model(key, model_type, device_map)
+        tokenizer = self._load_tokenizer(key, tokenizer_type)
+
+        return model, tokenizer
+
+    def load_model(
+            self,
+            key: _KeyLike,
+            model_type=AutoModel,
+            device_map=None,
+    ) -> PreTrainedModel:
         '''TODO'''
-        pass # TODO
+        key = ModelKey.convert_from(key)
+        self._ensure_stage(key)
+        return self._load_model(key, model_type, device_map)
+
+    def _load_model(self, key: ModelKey, model_type, device_map):
+        '''Return model specified by parameters.
+
+        This is used by :meth:`load()` and :meth:`load_model()`, and should not
+        be called directly by client code, as it does not call
+        :meth:`_ensure_stage()` the way those functions do.
+
+        '''
+        return model_type.from_pretrained(
+            key.hf_path,
+            revision=key.revision,
+            cache_dir=self.stagedir / self._model_subpath(key),
+            device_map=device_map,
+            local_files_only=True,
+        )
+
+    def load_tokenizer(
+            self,
+            key: _KeyLike,
+            tokenizer_type=AutoTokenizer,
+    ) -> PreTrainedTokenizer:
+        '''TODO'''
+        key = ModelKey.convert_from(key)
+        self._ensure_stage(key)
+        return self._load_tokenizer(key, tokenizer_type)
+
+    def _load_tokenizer(self, key: ModelKey, tokenizer_type):
+        '''Return tokenizer specified by parameters.
+
+        This is used by :meth:`load()` and :meth:`load_tokenizer()`, and should
+        not be called directly by client code, as it does not call
+        :meth:`_ensure_stage()` the way those functions do.
+
+        '''
+        return tokenizer_type.from_pretrained(
+            key.hf_path,
+            revision=key.revision,
+            cache_dir=self.stagedir / self._model_subpath(key),
+            local_files_only=True,
+        )
 
     def _ensure_stage(self, key: ModelKey):
         '''Block until model identified by ``key`` is staged.
@@ -159,6 +307,8 @@ class ModelLoader:
             )
             event.wait()
 
+    # TODO unstage
+
     @staticmethod
     def _model_subpath(key: ModelKey) -> Path:
         '''Common subpath to use for model in both cachedir and stagedir.'''
@@ -168,10 +318,10 @@ class ModelLoader:
         #    HuggingFace users.
         # 2. …prevent revision names with slashes from creating additional
         #    subdirectories.
-        path = Path(key.hf_path.replace('/', '.'))
-        if key.revision is not None:
-            path /= key.revision.replace('/', '.')
-        return path
+        return Path(
+            key.hf_path.replace('/', '.'),
+            key.revision.replace('/', '.') if key.revision else 'main',
+        )
 
 
 class _CompletionTracker:
@@ -297,8 +447,8 @@ class _NetThread(Thread):
 
     def __init__(
             self,
-            cachedir: _PathLike,
-            stagedir: _PathLike,
+            cachedir: _PathOrStr,
+            stagedir: _PathOrStr,
             disk_msgq: PriorityQueue[_DiskMsg],
             msgq: PriorityQueue[_NetMsg],
     ):
@@ -376,8 +526,8 @@ class _DiskThread(Thread):
 
     def __init__(
             self,
-            cachedir: _PathLike,
-            stagedir: _PathLike,
+            cachedir: _PathOrStr,
+            stagedir: _PathOrStr,
             main_msgq: PriorityQueue[_MainMsg],
             net_msgq: PriorityQueue[_NetMsg],
             msgq: PriorityQueue[_DiskMsg],
@@ -406,8 +556,8 @@ class _DiskThread(Thread):
         # TODO Handle msg.files?
 
         # TODO Check for missing/dirty files in cache.
-        files_to_dl: set[_PathLike] = set()
-        files_to_stage: set[_PathLike] = set()
+        files_to_dl: set[_PathOrStr] = set()
+        files_to_stage: set[_PathOrStr] = set()
         for f in hfhub.snapshot_download(
                 repo_id=msg.key.hf_path,
                 repo_type='model',
@@ -532,83 +682,57 @@ class _DiskThread(Thread):
             ))
 
 
-type _PathLike = Union[os.PathLike, str]
+class TestModelLoaderSequetialUsage(unittest.TestCase):
+    # TODO Separate boundaries.
 
+    MODEL_KEYS = [
+        'EleutherAI/pythia-160m',
+        ModelKey('EleutherAI/pythia-160m', 'step1'),
+    ]
 
-type _KeyLike = Union[
-    ModelKey,
-    str,
-    tuple[str, Union[str, None]],
-]
-'''Type for values that can be interpreted as :class:`ModelKey`s.'''
+    EXPECTED_MODEL_SUBPATHS: list[Path] = [
+        Path('EleutherAI.pythia-160m/main/'),
+        Path('EleutherAI.pythia-160m/step1/'),
+    ]
 
+    @classmethod
+    def setUpClass(cls) -> None:
+        import tempfile
+        cls.tmp_cachedir = tempfile.TemporaryDirectory(prefix='cache_')
+        cls.tmp_stagedir = tempfile.TemporaryDirectory(prefix='stage_')
+        cls.loader = ModelLoader(cls.tmp_cachedir.name, cls.tmp_stagedir.name)
 
-type _Keys = Union[_KeyLike, Iterable[_KeyLike]]
-'''Type for valid arguments to function parameters that can accept one or more
-:class:`ModelKeys`.'''
+    def test_cache(self):
+        import time
 
-def _normalize_keys_arg(keys) -> Iterable[ModelKey]:
-    if isinstance(keys, (ModelKey, str, tuple)):
-        return [ModelKey.convert_from(keys)]
-    else:
-        return [ModelKey.convert_from(key) for key in keys]
+        self.loader.cache(self.MODEL_KEYS)
 
+        while any(
+                self.loader._cache_complete.is_complete(ModelKey.convert_from(key))
+                for key in self.MODEL_KEYS
+        ): time.sleep(1)
 
-_MSG_NORMAL_PRIORITY = 50
-_MSG_HIGH_PRIORITY = 0
+        for path in self.EXPECTED_MODEL_SUBPATHS:
+            self.assertTrue(Path(
+                self.tmp_cachedir.name,
+                path,
+            ).is_dir())
 
+    def test_stage(self):
+        self.loader.stage(self.MODEL_KEYS)
 
-class _ModelLoaderTopLvlMsgBase(NamedTuple):
-    priority: int
-    key: ModelKey
+        for key in self.MODEL_KEYS:
+            key = ModelKey.convert_from(key)
+            self.loader._ensure_stage(key)
 
+        for path in self.EXPECTED_MODEL_SUBPATHS:
+            self.assertTrue(Path(
+                self.tmp_stagedir.name,
+                path,
+            ).is_dir())
 
-class _ModelLoaderInternalMsgBase(NamedTuple):
-    priority: int
-    key: ModelKey
-    files: Union[Iterable[_PathLike], None]
-
-
-class _ModelCacheCmd(_ModelLoaderTopLvlMsgBase): pass
-class _ModelStageCmd(_ModelLoaderTopLvlMsgBase): pass
-class _ModelCacheToStageCmd(_ModelLoaderInternalMsgBase): pass
-class _ModelStageToCacheCmd(_ModelLoaderInternalMsgBase): pass
-class _ModelDownloadForCachingCmd(_ModelLoaderInternalMsgBase): pass
-class _ModelDownloadForStagingCmd(_ModelLoaderInternalMsgBase): pass
-class _ModelDownloadForStagingCompleteMsg(_ModelLoaderInternalMsgBase): pass
-class _ModelUnstageCmd(_ModelLoaderInternalMsgBase): pass
-class _ModelCacheCompleteMsg(_ModelLoaderTopLvlMsgBase): pass
-class _ModelStageCompleteMsg(_ModelLoaderTopLvlMsgBase): pass
-class _ModelUnstageCompleteMsg(_ModelLoaderTopLvlMsgBase): pass
-
-class _ModelRegisterForStageCompleteCmd(NamedTuple):
-    priority: int
-    key: ModelKey
-    event: Event
-
-class _ThreadExitCmd: pass # TODO use
-
-
-type _MainMsg = Union[
-    _ModelCacheCmd,
-    _ModelStageCmd,
-    _ModelRegisterForStageCompleteCmd,
-    _ModelCacheCompleteMsg,
-    _ModelStageCompleteMsg,
-    _ModelUnstageCompleteMsg,
-]
-'''Messages that can be received by :class:`_MainThread`..'''
-
-type _NetMsg = Union[
-    _ModelDownloadForCachingCmd,
-    _ModelDownloadForStagingCmd,
-]
-'''Messages that can be received by :class:`_NetThread`.'''
-
-type _DiskMsg = Union[
-    _ModelCacheToStageCmd,
-    _ModelStageToCacheCmd,
-    _ModelDownloadForStagingCompleteMsg,
-    _ModelUnstageCmd,
-]
-'''Messages that can be received by :class:`_DiskThread`.'''
+    def test_load(self):
+        for key in self.MODEL_KEYS:
+            model, tokenizer = self.loader.load(key)
+            self.assertIsNot(model, None)
+            self.assertIsNot(tokenizer, None)
