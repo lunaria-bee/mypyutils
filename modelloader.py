@@ -1,10 +1,17 @@
-from collections.abc import Collection, Iterable
-from os import PathLike
+from collections.abc import Iterable
+import huggingface_hub as hfhub
+import logging
+import os
 from pathlib import Path
-from queue import Queue
-from threading import Lock, Thread
-from transformers import AutoModel, AutoTokenizer, PreTrainedModel, PreTrainedTokenizer
+from queue import PriorityQueue
+import shutil
+import subprocess
+from threading import Event, Lock, Thread
+from transformers import AutoModel, AutoTokenizer
 from typing import NamedTuple, Union
+
+
+_log = logging.getLogger(__name__)
 
 
 class ModelKey(NamedTuple):
@@ -38,18 +45,6 @@ class ModelKey(NamedTuple):
             )
 
 
-type _KeyLike = Union[
-    ModelKey,
-    str,
-    tuple[str, Union[str, None]],
-]
-'''Type for values that can be interpreted as :class:`ModelKey`s.'''
-
-type _Keys = Union[_KeyLike, Iterable[_KeyLike]]
-'''Type for valid arguments to function parameters that can accept one or more
-:class:`ModelKeys`.'''
-
-
 class ModelLoader:
     '''TODO'''
 
@@ -57,38 +52,44 @@ class ModelLoader:
     # staging, as these are blocked by separate I/O resources (internet and
     # intranet, respectively).
 
-    def __init__(self, cachedir: PathLike, stagedir: PathLike):
+    def __init__(self, cachedir: _PathLike, stagedir: _PathLike):
         # TODO Way to set default model loading kwargs.
         # TODO Way to set default tokenizer loading kwargs.
 
-        self._cachedir: Path = Path(cachedir)
+        self._cachedir = Path(cachedir)
         '''Directory where models will be cached.'''
 
-        self._cache_thread: Thread = Thread(target=self._cache_thread_fn)
-        '''Thread managing model caching.'''
-
-        self._cache_msg_queue: Queue[Union[
-            _ModelCacheCmd,
-            _ModelCacheForStagingCmd,
-        ]] = Queue()
-        ''':attr:`_cache_thread` message queue.'''
-
-        self._cache_complete: set[ModelKey] = set()
-        ''':class:`ModelKey`s of cached models.'''
-
-        self._cache_complete_lock: Lock = Lock()
-
-        self._stagedir: Path = Path(stagedir)
+        self._stagedir = Path(stagedir)
         '''Directory where models will be staged for loading to memory.'''
 
-        self._stage_thread: Thread = Thread(target=self._stage_thread_fn)
-        '''Thread managing model staging.'''
-
-        self._stage_msg_queue: Queue[_ModelStageCmd] = Queue()
-        ''':attr:`_stage_tbread` message queue.'''
-
-        self._stage_complete: set[ModelKey] = set()
-        ''':class:`ModelKey`s of staged models.'''
+        self._cache_complete = _CompletionTracker()
+        self._stage_complete = _CompletionTracker()
+        main_msgq: PriorityQueue[_MainMsg] = PriorityQueue()
+        net_msgq: PriorityQueue[_NetMsg] = PriorityQueue()
+        disk_msgq: PriorityQueue[_DiskMsg] = PriorityQueue()
+        self._main_thread = _MainThread(
+            self._cache_complete,
+            self._stage_complete,
+            net_msgq,
+            disk_msgq,
+            main_msgq,
+        )
+        self._net_thread = _NetThread(
+            self._cachedir,
+            self._stagedir,
+            disk_msgq,
+            net_msgq,
+        )
+        self._disk_thread = _DiskThread(
+            self._cachedir,
+            self._stagedir,
+            main_msgq,
+            net_msgq,
+            disk_msgq,
+        )
+        self._main_thread.start()
+        self._net_thread.start()
+        self._disk_thread.start()
 
     @property
     def cachedir(self):
@@ -102,87 +103,507 @@ class ModelLoader:
 
     def cache(self, keys: _Keys):
         '''TODO'''
-        if not isinstance(keys, Iterable):
-            keys = [keys]
-
+        keys = _normalize_keys_arg(keys)
         for key in keys:
-            if isinstance(key, ModelKey):
-                pass
-
-            elif isinstance(key, str):
-                pass
-
-            elif isinstance(key, tuple):
-                pass
-
-            else:
-                raise ValueError(f"Invalid key type f{repr(type(key))}")
+            self._main_thread.msgq.put(_ModelCacheCmd(_MSG_NORMAL_PRIORITY, key))
 
     def stage(self, keys: _Keys):
         '''TODO'''
-        pass # TODO
+        keys = _normalize_keys_arg(keys)
+        for key in keys:
+            self._main_thread.msgq.put(_ModelStageCmd(_MSG_NORMAL_PRIORITY, key))
 
     def load(
             self,
-            key: ModelKey,
+            key: _KeyLike,
             model_type=AutoModel,
             tokenizer_type=AutoTokenizer,
     ):
         '''TODO'''
         pass # TODO
 
-    def load_model(self, key: ModelKey, model_type=AutoModel):
+    def load_model(self, key: _KeyLike, model_type=AutoModel):
         '''TODO'''
         pass # TODO
 
-    def load_tokenizer(self, key: ModelKey, tokenizer_type=AutoTokenizer):
+    def load_tokenizer(self, key: _KeyLike, tokenizer_type=AutoTokenizer):
         '''TODO'''
         pass # TODO
 
-    def _cache_thread_fn(self):
+    def _ensure_stage(self, key: ModelKey):
+        '''Block until model identified by ``key`` is staged.
+
+        If model is already staged, return immediately.
+
+        If model is not already staged, queue a stage command on the main
+        thread, register a stage complete event, and then wait for the event to
+        be set. See
+        :meth:`_MainThread._handle_model_register_for_stage_complete_cmd()` and
+        :meth:`_MainThread._handle_model_stage_complete_msg()` for more.
+
+        '''
+        if not self._stage_complete.is_complete(key):
+            self.stage(key)
+            event = Event()
+            self._main_thread.msgq.put(
+                _ModelRegisterForStageCompleteCmd(
+                    _MSG_HIGH_PRIORITY,
+                    key,
+                    event,
+                )
+            )
+            event.wait()
+
+    @staticmethod
+    def _model_subpath(key: ModelKey) -> Path:
+        '''Common subpath to use for model in both cachedir and stagedir.'''
+        # TODO Handle `key.revision==None`.
+        # Replace slashes with periods to…
+        # 1. …have top-level directories correspond to models rather than
+        #    HuggingFace users.
+        # 2. …prevent revision names with slashes from creating additional
+        #    subdirectories.
+        path = Path(key.hf_path.replace('/', '.'))
+        if key.revision is not None:
+            path /= key.revision.replace('/', '.')
+        return path
+
+
+class _CompletionTracker:
+    '''TODO'''
+
+    def __init__(self):
+        self._complete: set[ModelKey] = set()
+        self._lock: Lock = Lock()
+
+    def is_complete(self, key: _KeyLike):
+        '''Is ``key`` marked complete?'''
+        key = ModelKey.convert_from(key)
+        with self._lock:
+            return key in self._complete
+
+    def mark_complete(self, key: _KeyLike):
+        '''Mark ``key`` as complete.'''
+        key = ModelKey.convert_from(key)
+        with self._lock:
+            if key in self._complete:
+                _log.warning(f"{key} already marked complete")
+            self._complete.add(key)
+
+    def unmark_complete(self, key: _KeyLike):
+        '''Unmark ``key`` as complete.'''
+        key = ModelKey.convert_from(key)
+        with self._lock:
+            if key not in self._complete:
+                _log.warning(f"{key} not marked complete")
+            self._complete.remove(key)
+
+
+class _MainThread(Thread):
+    '''TODO'''
+
+    def __init__(
+            self,
+            cache_complete: _CompletionTracker,
+            stage_complete: _CompletionTracker,
+            net_msgq: PriorityQueue[_NetMsg],
+            disk_msgq: PriorityQueue[_DiskMsg],
+            msgq: PriorityQueue[_MainMsg],
+    ):
+        self.cache_complete: _CompletionTracker = cache_complete
+        self.stage_complete: _CompletionTracker = stage_complete
+        self.net_msgq: PriorityQueue[_NetMsg] = net_msgq
+        self.disk_msgq: PriorityQueue[_DiskMsg] = disk_msgq
+        self.msgq: PriorityQueue[_MainMsg] = msgq
+        self.stage_complete_registry: dict[ModelKey, list[Event]] = dict()
+
+    def run(self):
+        msg_handler_map = {
+            _ModelCacheCmd: self._handle_model_cache_cmd,
+            _ModelStageCmd: self._handle_model_stage_cmd,
+            _ModelRegisterForStageCompleteCmd: self._handle_model_register_for_stage_complete_cmd,
+            _ModelCacheCompleteMsg: self._handle_model_cache_complete_msg,
+            _ModelStageCompleteMsg: self._handle_model_stage_complete_msg,
+            _ModelUnstageCompleteMsg: self._handle_model_unstage_complete_msg,
+        }
         while True:
-            pass # TODO
+            msg: _MainMsg = self.msgq.get()
+            _log.debug(repr(msg))
+            msg_handler_map[type(msg)](msg)
 
-    def _stage_thread_fn(self):
+    def _handle_model_cache_cmd(self, msg: _ModelCacheCmd):
+        '''TODO'''
+        if not self.cache_complete.is_complete(msg.key):
+            self.net_msgq.put(
+                _ModelDownloadForCachingCmd(
+                    _MSG_NORMAL_PRIORITY,
+                    msg.key,
+                    None,
+                )
+            )
+
+    def _handle_model_stage_cmd(self, msg: _ModelStageCmd):
+        '''TODO'''
+        if not self.stage_complete.is_complete(msg.key):
+            self.disk_msgq.put(
+                _ModelCacheToStageCmd(
+                    _MSG_NORMAL_PRIORITY,
+                    msg.key,
+                    None,
+                )
+            )
+
+    def _handle_model_register_for_stage_complete_cmd(self, msg: _ModelRegisterForStageCompleteCmd):
+        '''TODO'''
+        # Model already staged: set event and discard.
+        if self.stage_complete.is_complete(msg.key):
+            msg.event.set()
+
+        # Model not staged, has existing registry entry: append to registry
+        # entry.
+        elif msg.key in self.stage_complete_registry:
+            self.stage_complete_registry[msg.key].append(msg.event)
+
+        # Model not staged, has no registry entry: create new registry entry.
+        else:
+            self.stage_complete_registry[msg.key] = [msg.event]
+
+    def _handle_model_cache_complete_msg(self, msg: _ModelCacheCompleteMsg):
+        '''TODO'''
+        self.cache_complete.mark_complete(msg.key)
+
+    def _handle_model_stage_complete_msg(self, msg: _ModelStageCompleteMsg):
+        '''TODO'''
+        self.stage_complete.mark_complete(msg.key)
+
+        # Notify registered events.
+        if msg.key in self.stage_complete_registry:
+            for event in self.stage_complete_registry[msg.key]:
+                event.set()
+            del self.stage_complete_registry[msg.key]
+
+    def _handle_model_unstage_complete_msg(self, msg: _ModelUnstageCompleteMsg):
+        '''TODO'''
+        self.stage_complete.unmark_complete(msg.key)
+
+
+class _NetThread(Thread):
+    '''TODO'''
+
+    def __init__(
+            self,
+            cachedir: _PathLike,
+            stagedir: _PathLike,
+            disk_msgq: PriorityQueue[_DiskMsg],
+            msgq: PriorityQueue[_NetMsg],
+    ):
+        self.cachedir: Path = Path(cachedir)
+        self.stagedir: Path = Path(stagedir)
+        self.disk_msgq: PriorityQueue[_DiskMsg] = disk_msgq
+        self.msgq: PriorityQueue[_NetMsg] = msgq
+
+    def run(self):
+        msg_handler_map = {
+            _ModelDownloadForCachingCmd: self._handle_model_download_for_caching_cmd,
+            _ModelDownloadForStagingCmd: self._handle_model_download_for_staging_cmd,
+        }
         while True:
-            cmd = self._stage_queue.get()
+            msg: _NetMsg = self.msgq.get()
+            _log.debug(repr(msg))
+            msg_handler_map[type(msg)](msg)
 
-            # TODO Check if model is staged.
+    def _handle_model_download_for_caching_cmd(self, msg):
+        '''TODO'''
+        self._download(msg)
+        self.disk_msgq.put(
+            _ModelStageToCacheCmd(
+                _MSG_HIGH_PRIORITY,
+                msg.key,
+                msg.files,
+            )
+        )
+        # TODO Unstage?
 
-            # TODO Check for cached files.
+    def _handle_model_download_for_staging_cmd(self, msg):
+        '''TODO'''
+        self._download(msg)
+        self.disk_msgq.put(
+            _ModelDownloadForStagingCompleteMsg(
+                _MSG_HIGH_PRIORITY,
+                msg.key,
+                msg.files,
+            )
+        )
 
-            # TODO If files are missing from cache, send high-priority
-            # _ModelCacheForStagingCmd, stage files that are already cached, and
-            # quit without marking file as staged (_cache_thread_fn will do it).
+    def _download(self, msg):
+        '''TODO'''
+        subpath = ModelLoader._model_subpath(msg.key)
 
-            # Else, stage all files.
+        if msg.files is not None:
+            # Download files specified in message.
+            files_to_dl = msg.files
+        else:
+            # Download files that snapshot download says are missing/dirty in
+            # the cache.
+            files_to_dl = set(
+                f.filename for f in hfhub.snapshot_download(
+                    repo_id=msg.key.hf_path,
+                    repo_type='model',
+                    revision=msg.key.revision,
+                    cache_dir=self.cachedir / subpath,
+                    dry_run=True,
+                ) if f.will_download
+            )
+
+        # Execute download.
+        for filename in files_to_dl:
+            hfhub.hf_hub_download(
+                repo_id=msg.key.hf_path,
+                repo_type='model',
+                revision=msg.key.revision,
+                cache_dir=self.stagedir / subpath,
+                filename=filename,
+            )
 
 
-class _ModelMsgBase(NamedTuple):
+class _DiskThread(Thread):
+    '''TODO'''
+
+    def __init__(
+            self,
+            cachedir: _PathLike,
+            stagedir: _PathLike,
+            main_msgq: PriorityQueue[_MainMsg],
+            net_msgq: PriorityQueue[_NetMsg],
+            msgq: PriorityQueue[_DiskMsg],
+    ):
+        self.cachedir: Path = Path(cachedir)
+        self.stagedir: Path = Path(stagedir)
+        self.main_msgq: PriorityQueue[_MainMsg] = main_msgq
+        self.net_msgq: PriorityQueue[_NetMsg] = net_msgq
+        self.msgq: PriorityQueue[_DiskMsg] = msgq
+
+    def run(self):
+        msg_handler_map = {
+            _ModelCacheToStageCmd: self._handle_model_cache_to_stage_cmd,
+            _ModelStageToCacheCmd: self._handle_model_stage_to_cache_cmd,
+            _ModelDownloadForStagingCompleteMsg: self._handle_model_download_for_staging_complete_msg,
+            _ModelUnstageCmd: self._handle_model_unstage_cmd,
+        }
+        while True:
+            msg: _DiskMsg = self.msgq.get()
+            _log.debug(repr(msg))
+            msg_handler_map[type(msg)](msg)
+
+    def _handle_model_cache_to_stage_cmd(self, msg: _ModelCacheToStageCmd):
+        '''TODO'''
+        subpath = ModelLoader._model_subpath(msg.key)
+        # TODO Handle msg.files?
+
+        # TODO Check for missing/dirty files in cache.
+        files_to_dl: set[_PathLike] = set()
+        files_to_stage: set[_PathLike] = set()
+        for f in hfhub.snapshot_download(
+                repo_id=msg.key.hf_path,
+                repo_type='model',
+                revision=msg.key.revision,
+                cache_dir=self.cachedir / subpath,
+                dry_run=True,
+        ):
+            if f.will_download:
+                files_to_dl.add(f.filename)
+            else:
+                files_to_stage.add(f.filename)
+
+        if files_to_dl:
+            # Tell net thread to download missing/dirty files and report back
+            # with _ModelDownloadForStagingCompleteMsg when it is done.
+            self.net_msgq.put(
+                _ModelDownloadForStagingCmd(
+                    _MSG_HIGH_PRIORITY,
+                    msg.key,
+                    files_to_dl,
+                )
+            )
+
+        if files_to_stage:
+            # TODO Refactor.
+            rsync_cmd = [
+                'rsync',
+                '-l', # copy symlinks as symlinks (HF uses symlinks to map model parts to blobs)
+                '-R', # copy path names relative to '/./' in source path
+                '-v', # print info
+            ] + [
+                f'{self.cachedir}/./{subpath}/{filename}'
+                for filename in files_to_stage
+            ] + [
+                f'{self.stagedir}/{subpath}/',
+            ]
+            rsync_result = subprocess.run(
+                rsync_cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+            )
+            _log.debug(f"rsync output:\n{rsync_result.stdout.decode('utf8')}")
+
+        if not files_to_dl:
+            # Files have been copied to stage and none need to be downloaded, so
+            # report _ModelStageCompleteMsg back to main thread.
+            self.main_msgq.put(_ModelStageCompleteMsg(
+                _MSG_HIGH_PRIORITY,
+                msg.key,
+            ))
+
+    def _handle_model_stage_to_cache_cmd(self, msg: _ModelStageToCacheCmd):
+        '''TODO'''
+        subpath = ModelLoader._model_subpath(msg.key)
+
+        rsync_cmd = [
+            'rsync',
+            '-l',
+            '-v',
+        ]
+        if msg.files:
+            rsync_cmd.append('-R')
+            rsync_cmd += [
+                f'{self.stagedir}/./{subpath}/{filename}'
+                for filename in msg.files
+            ]
+        else:
+            rsync_cmd.append(f'{self.stagedir}/{subpath}/')
+        rsync_cmd.append(f'{self.cachedir}/{subpath}/')
+
+        rsync_result = subprocess.run(
+            rsync_cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        _log.debug(f"rsync output:\n{rsync_result.stdout.decode('utf8')}")
+
+        self.main_msgq.put(
+            _ModelCacheCompleteMsg(
+                _MSG_HIGH_PRIORITY,
+                msg.key,
+            ))
+
+    def _handle_model_download_for_staging_complete_msg(self, msg: _ModelDownloadForCachingCmd):
+        '''TODO'''
+        self.main_msgq.put(
+            _ModelStageCompleteMsg(
+                _MSG_HIGH_PRIORITY,
+                msg.key,
+            )
+        )
+        self.msgq.put(
+            _ModelStageToCacheCmd(
+                _MSG_HIGH_PRIORITY,
+                msg.key,
+                msg.files,
+            )
+        )
+
+    def _handle_model_unstage_cmd(self, msg: _ModelUnstageCmd):
+        '''TODO'''
+        model_stage_path = self.stagedir / ModelLoader._model_subpath(msg.key)
+        if msg.files:
+            for filename in msg.files:
+                path = Path(
+                    model_stage_path,
+                    filename,
+                )
+                if not path.exists():
+                    _log.warning(
+                        f"No such file {filename} for {msg.key} "
+                        f"(expected at {path})"
+                    )
+                path.unlink(missing_ok=True)
+        else:
+            shutil.rmtree(model_stage_path)
+
+        self.main_msgq.put(
+            _ModelUnstageCompleteMsg(
+                _MSG_HIGH_PRIORITY,
+                msg.key,
+            ))
+
+
+type _PathLike = Union[os.PathLike, str]
+
+
+type _KeyLike = Union[
+    ModelKey,
+    str,
+    tuple[str, Union[str, None]],
+]
+'''Type for values that can be interpreted as :class:`ModelKey`s.'''
+
+
+type _Keys = Union[_KeyLike, Iterable[_KeyLike]]
+'''Type for valid arguments to function parameters that can accept one or more
+:class:`ModelKeys`.'''
+
+def _normalize_keys_arg(keys) -> Iterable[ModelKey]:
+    if isinstance(keys, (ModelKey, str, tuple)):
+        return [ModelKey.convert_from(keys)]
+    else:
+        return [ModelKey.convert_from(key) for key in keys]
+
+
+_MSG_NORMAL_PRIORITY = 50
+_MSG_HIGH_PRIORITY = 0
+
+
+class _ModelLoaderTopLvlMsgBase(NamedTuple):
     priority: int
     key: ModelKey
 
-    @classmethod
-    def new(
-            cls,
-            key: ModelKey,
-            priority: int = 50,
-    ):
-        return cls(priority, key)
 
-class _ModelCacheCmd(_ModelMsgBase): pass
-class _ModelStageCmd(_ModelMsgBase): pass
-
-class _ModelCacheForStagingCmd(NamedTuple):
+class _ModelLoaderInternalMsgBase(NamedTuple):
     priority: int
     key: ModelKey
-    files: Collection[PathLike]
+    files: Union[Iterable[_PathLike], None]
 
-    @classmethod
-    def new(
-            cls,
-            key: ModelKey,
-            files: Collection[PathLike],
-            priority: int = 0,
-    ):
-        return cls(priority, key, files)
+
+class _ModelCacheCmd(_ModelLoaderTopLvlMsgBase): pass
+class _ModelStageCmd(_ModelLoaderTopLvlMsgBase): pass
+class _ModelCacheToStageCmd(_ModelLoaderInternalMsgBase): pass
+class _ModelStageToCacheCmd(_ModelLoaderInternalMsgBase): pass
+class _ModelDownloadForCachingCmd(_ModelLoaderInternalMsgBase): pass
+class _ModelDownloadForStagingCmd(_ModelLoaderInternalMsgBase): pass
+class _ModelDownloadForStagingCompleteMsg(_ModelLoaderInternalMsgBase): pass
+class _ModelUnstageCmd(_ModelLoaderInternalMsgBase): pass
+class _ModelCacheCompleteMsg(_ModelLoaderTopLvlMsgBase): pass
+class _ModelStageCompleteMsg(_ModelLoaderTopLvlMsgBase): pass
+class _ModelUnstageCompleteMsg(_ModelLoaderTopLvlMsgBase): pass
+
+class _ModelRegisterForStageCompleteCmd(NamedTuple):
+    priority: int
+    key: ModelKey
+    event: Event
+
+class _ThreadExitCmd: pass # TODO use
+
+
+type _MainMsg = Union[
+    _ModelCacheCmd,
+    _ModelStageCmd,
+    _ModelRegisterForStageCompleteCmd,
+    _ModelCacheCompleteMsg,
+    _ModelStageCompleteMsg,
+    _ModelUnstageCompleteMsg,
+]
+'''Messages that can be received by :class:`_MainThread`..'''
+
+type _NetMsg = Union[
+    _ModelDownloadForCachingCmd,
+    _ModelDownloadForStagingCmd,
+]
+'''Messages that can be received by :class:`_NetThread`.'''
+
+type _DiskMsg = Union[
+    _ModelCacheToStageCmd,
+    _ModelStageToCacheCmd,
+    _ModelDownloadForStagingCompleteMsg,
+    _ModelUnstageCmd,
+]
+'''Messages that can be received by :class:`_DiskThread`.'''
