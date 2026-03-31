@@ -11,6 +11,11 @@ from transformers import AutoModel, AutoTokenizer
 from typing import NamedTuple, Union
 
 
+# TODO Handle inability to make requests due to HF rate limits. Look into how
+# load_from_pretrained determines what files it needs to load for a model,
+# especially when `local_files_only=True`.
+
+
 _log = logging.getLogger(__name__)
 
 
