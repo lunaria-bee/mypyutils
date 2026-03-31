@@ -12,6 +12,8 @@ from typing import NamedTuple, Union
 import unittest
 
 
+# TODO Make messages all have the form `(priority, data)`.
+
 # TODO Handle inability to make requests due to HF rate limits. Look into how
 # load_from_pretrained determines what files it needs to load for a model,
 # especially when `local_files_only=True`.
