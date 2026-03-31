@@ -365,6 +365,7 @@ class _MainThread(Thread):
             disk_msgq: PriorityQueue[_DiskMsg],
             msgq: PriorityQueue[_MainMsg],
     ):
+        super().__init__()
         self.cache_complete: _CompletionTracker = cache_complete
         self.stage_complete: _CompletionTracker = stage_complete
         self.net_msgq: PriorityQueue[_NetMsg] = net_msgq
@@ -452,6 +453,7 @@ class _NetThread(Thread):
             disk_msgq: PriorityQueue[_DiskMsg],
             msgq: PriorityQueue[_NetMsg],
     ):
+        super().__init__()
         self.cachedir: Path = Path(cachedir)
         self.stagedir: Path = Path(stagedir)
         self.disk_msgq: PriorityQueue[_DiskMsg] = disk_msgq
@@ -532,6 +534,7 @@ class _DiskThread(Thread):
             net_msgq: PriorityQueue[_NetMsg],
             msgq: PriorityQueue[_DiskMsg],
     ):
+        super().__init__()
         self.cachedir: Path = Path(cachedir)
         self.stagedir: Path = Path(stagedir)
         self.main_msgq: PriorityQueue[_MainMsg] = main_msgq
