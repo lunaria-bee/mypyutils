@@ -33,6 +33,8 @@ type _KeyLike = Union[
 '''Type for values that can be interpreted as :class:`ModelKey`s.'''
 
 
+# TODO A tuple of two HF paths (2 keys) is indistinguishable from a (hf path,
+# revision) pair. Fix this by just using arg packs of *keys.
 type _Keys = Union[_KeyLike, Iterable[_KeyLike]]
 '''Type for valid arguments to function parameters that can accept one or more
 :class:`ModelKeys`.'''
