@@ -169,7 +169,7 @@ class MainThread(Thread):
         if not self.cache_complete.is_complete(msg.key):
             self.net_msgq.put(
                 ModelDownloadForCachingCmd(
-                    _MSG_NORMAL_PRIORITY,
+                    MSG_NORMAL_PRIORITY,
                     msg.key,
                     None,
                 )
@@ -180,7 +180,7 @@ class MainThread(Thread):
         if not self.stage_complete.is_complete(msg.key):
             self.disk_msgq.put(
                 ModelCacheToStageCmd(
-                    _MSG_NORMAL_PRIORITY,
+                    MSG_NORMAL_PRIORITY,
                     msg.key,
                     None,
                 )
@@ -251,7 +251,7 @@ class NetThread(Thread):
         self._download(msg)
         self.disk_msgq.put(
             ModelStageToCacheCmd(
-                _MSG_HIGH_PRIORITY,
+                MSG_HIGH_PRIORITY,
                 msg.key,
                 msg.files,
             )
@@ -263,7 +263,7 @@ class NetThread(Thread):
         self._download(msg)
         self.disk_msgq.put(
             ModelDownloadForStagingCompleteMsg(
-                _MSG_HIGH_PRIORITY,
+                MSG_HIGH_PRIORITY,
                 msg.key,
                 msg.files,
             )
@@ -355,7 +355,7 @@ class DiskThread(Thread):
             # with ModelDownloadForStagingCompleteMsg when it is done.
             self.net_msgq.put(
                 ModelDownloadForStagingCmd(
-                    _MSG_HIGH_PRIORITY,
+                    MSG_HIGH_PRIORITY,
                     msg.key,
                     files_to_dl,
                 )
@@ -385,7 +385,7 @@ class DiskThread(Thread):
             # Files have been copied to stage and none need to be downloaded, so
             # report ModelStageCompleteMsg back to main thread.
             self.main_msgq.put(ModelStageCompleteMsg(
-                _MSG_HIGH_PRIORITY,
+                MSG_HIGH_PRIORITY,
                 msg.key,
             ))
 
@@ -417,7 +417,7 @@ class DiskThread(Thread):
 
         self.main_msgq.put(
             ModelCacheCompleteMsg(
-                _MSG_HIGH_PRIORITY,
+                MSG_HIGH_PRIORITY,
                 msg.key,
             ))
 
@@ -425,13 +425,13 @@ class DiskThread(Thread):
         '''TODO'''
         self.main_msgq.put(
             ModelStageCompleteMsg(
-                _MSG_HIGH_PRIORITY,
+                MSG_HIGH_PRIORITY,
                 msg.key,
             )
         )
         self.msgq.put(
             ModelStageToCacheCmd(
-                _MSG_HIGH_PRIORITY,
+                MSG_HIGH_PRIORITY,
                 msg.key,
                 msg.files,
             )
@@ -457,6 +457,6 @@ class DiskThread(Thread):
 
         self.main_msgq.put(
             ModelUnstageCompleteMsg(
-                _MSG_HIGH_PRIORITY,
+                MSG_HIGH_PRIORITY,
                 msg.key,
             ))
