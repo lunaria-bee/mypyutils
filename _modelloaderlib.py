@@ -4,6 +4,7 @@ import logging
 import os
 from pathlib import Path
 from queue import PriorityQueue
+import shutil
 import subprocess
 from threading import Event, Lock, Thread
 from typing import NamedTuple, Union
