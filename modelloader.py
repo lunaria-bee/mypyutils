@@ -335,27 +335,34 @@ class _CompletionTracker:
         self._complete: set[ModelKey] = set()
         self._lock: Lock = Lock()
 
-    def is_complete(self, key: _KeyLike):
+    def is_complete(self, key: _KeyLike) -> bool:
         '''Is ``key`` marked complete?'''
+        _log.debug(f"ENTER {key}")
         key = ModelKey.convert_from(key)
         with self._lock:
-            return key in self._complete
+            result = key in self._complete
+        _log.debug(f"EXIT {result}")
+        return result
 
     def mark_complete(self, key: _KeyLike):
         '''Mark ``key`` as complete.'''
+        _log.debug(f"ENTER {key}")
         key = ModelKey.convert_from(key)
         with self._lock:
             if key in self._complete:
                 _log.warning(f"{key} already marked complete")
             self._complete.add(key)
+        _log.debug("EXIT")
 
     def unmark_complete(self, key: _KeyLike):
         '''Unmark ``key`` as complete.'''
+        _log.debug(f"ENTER {key}")
         key = ModelKey.convert_from(key)
         with self._lock:
             if key not in self._complete:
                 _log.warning(f"{key} not marked complete")
             self._complete.remove(key)
+        _log.debug("EXIT")
 
 
 class _MainThread(Thread):
