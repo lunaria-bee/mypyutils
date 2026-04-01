@@ -4,10 +4,13 @@ from pathlib import Path
 from queue import PriorityQueue
 from threading import Event
 from transformers import AutoModel, AutoTokenizer, PreTrainedModel, PreTrainedTokenizer
-from typing import NamedTuple, Union
+from typing import Union
 import unittest
 
-from _modelloaderlib import *
+from messages import *
+from modelkey import KeyLike, ModelKey
+from threads import *
+from util import PathOrStr
 
 
 # TODO Make messages all have the form `(priority, data)`.
@@ -20,46 +23,14 @@ from _modelloaderlib import *
 # and receipt.
 
 
-_log = logging.getLogger(__name__)
+_log = logging.getLogger(__name__) # TODO One logger for entire modellib submodule.
 
 
-class ModelKey(NamedTuple):
-    '''Unique identifier for a model.'''
-
-    hf_path: str
-    '''HuggingFace model path.
-
-    As passed to the ``pretrained_model_name_or_path`` argument of
-    :meth:`transformers.PreTrainedModel.from_pretrained()`.
-
-    '''
-
-    revision: Union[str, None]
-    '''Repo revision identifying a specific model checkpoint.
-
-    As passed to the ``revision`` argument of
-    :meth:`transformers.PreTrainedModel.from_pretrained()`.
-
-    If ``None``, use the default revision.
-
-    '''
-
-    @classmethod
-    def convert_from(cls, key: KeyLike) -> 'ModelKey':
-        '''Convert ``key`` into a :class:`ModelKey`.'''
-        if isinstance(key, cls):
-            return key
-
-        elif isinstance(key, str):
-            return cls(key, None)
-
-        elif isinstance(key, tuple) and len(key) == 2:
-            return cls(*key)
-
-        else:
-            raise ValueError(
-                f"Cannot interpret {repr(key)} as ModelKey"
-            )
+# TODO A tuple of two HF paths (2 keys) is indistinguishable from a (hf path,
+# revision) pair. Fix this by just using arg packs of *keys.
+type Keys = Union[KeyLike, Iterable[KeyLike]]
+'''Type for valid arguments to function parameters that can accept one or more
+:class:`ModelKeys`.'''
 
 
 def _normalize_keys_arg(keys) -> Iterable[ModelKey]:

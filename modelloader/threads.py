@@ -1,110 +1,27 @@
-from collections.abc import Iterable
 import huggingface_hub as hfhub
 import logging
-import os
 from pathlib import Path
 from queue import PriorityQueue
-import shutil
-import subprocess
 from threading import Event, Lock, Thread
-from typing import NamedTuple, Union
 
-import modelloader
-
-
-_log = logging.getLogger(modelloader.__name__)
+from messages import *
+from modelkey import KeyLike, ModelKey
 
 
-type KeyLike = Union[
-    modelloader.ModelKey,
-    str,
-    tuple[str, Union[str, None]],
-]
-'''Type for values that can be interpreted as :class:`ModelKey`s.'''
-
-
-# TODO A tuple of two HF paths (2 keys) is indistinguishable from a (hf path,
-# revision) pair. Fix this by just using arg packs of *keys.
-type Keys = Union[KeyLike, Iterable[KeyLike]]
-'''Type for valid arguments to function parameters that can accept one or more
-:class:`ModelKeys`.'''
-
-
-type PathOrStr = Union[os.PathLike, str]
-'''Type for paths that are allowed to be represented as ``str``.'''
-
-
-MSG_NORMAL_PRIORITY = 50
-MSG_HIGH_PRIORITY = 0
-
-
-class ModelLoaderTopLvlMsgBase(NamedTuple):
-    priority: int
-    key: modelloader.ModelKey
-
-
-class ModelLoaderInternalMsgBase(NamedTuple):
-    priority: int
-    key: modelloader.ModelKey
-    files: Union[Iterable[PathOrStr], None]
-
-
-class ModelCacheCmd(ModelLoaderTopLvlMsgBase): pass
-class ModelStageCmd(ModelLoaderTopLvlMsgBase): pass
-class ModelCacheToStageCmd(ModelLoaderInternalMsgBase): pass
-class ModelStageToCacheCmd(ModelLoaderInternalMsgBase): pass
-class ModelDownloadForCachingCmd(ModelLoaderInternalMsgBase): pass
-class ModelDownloadForStagingCmd(ModelLoaderInternalMsgBase): pass
-class ModelDownloadForStagingCompleteMsg(ModelLoaderInternalMsgBase): pass
-class ModelUnstageCmd(ModelLoaderInternalMsgBase): pass
-class ModelCacheCompleteMsg(ModelLoaderTopLvlMsgBase): pass
-class ModelStageCompleteMsg(ModelLoaderTopLvlMsgBase): pass
-class ModelUnstageCompleteMsg(ModelLoaderTopLvlMsgBase): pass
-
-class ModelRegisterForStageCompleteCmd(NamedTuple):
-    priority: int
-    key: modelloader.ModelKey
-    event: Event
-
-class _ThreadExitCmd: pass # TODO use
-
-
-type MainMsg = Union[
-    ModelCacheCmd,
-    ModelStageCmd,
-    ModelRegisterForStageCompleteCmd,
-    ModelCacheCompleteMsg,
-    ModelStageCompleteMsg,
-    ModelUnstageCompleteMsg,
-]
-'''Messages that can be received by :class:`_MainThread`..'''
-
-type NetMsg = Union[
-    ModelDownloadForCachingCmd,
-    ModelDownloadForStagingCmd,
-]
-'''Messages that can be received by :class:`_NetThread`.'''
-
-type DiskMsg = Union[
-    ModelCacheToStageCmd,
-    ModelStageToCacheCmd,
-    ModelDownloadForStagingCompleteMsg,
-    ModelUnstageCmd,
-]
-'''Messages that can be received by :class:`_DiskThread`.'''
+_log = logging.getLogger(__name__) # TODO One logger for entire modellib submodule.
 
 
 class CompletionTracker:
     '''TODO'''
 
     def __init__(self):
-        self._complete: set[modelloader.ModelKey] = set()
+        self._complete: set[ModelKey] = set()
         self._lock: Lock = Lock()
 
     def is_complete(self, key: KeyLike) -> bool:
         '''Is ``key`` marked complete?'''
         _log.debug(f"ENTER {key}")
-        key = modelloader.ModelKey.convert_from(key)
+        key = ModelKey.convert_from(key)
         with self._lock:
             result = key in self._complete
         _log.debug(f"EXIT {result}")
@@ -113,7 +30,7 @@ class CompletionTracker:
     def mark_complete(self, key: KeyLike):
         '''Mark ``key`` as complete.'''
         _log.debug(f"ENTER {key}")
-        key = modelloader.ModelKey.convert_from(key)
+        key = ModelKey.convert_from(key)
         with self._lock:
             if key in self._complete:
                 _log.warning(f"{key} already marked complete")
@@ -123,7 +40,7 @@ class CompletionTracker:
     def unmark_complete(self, key: KeyLike):
         '''Unmark ``key`` as complete.'''
         _log.debug(f"ENTER {key}")
-        key = modelloader.ModelKey.convert_from(key)
+        key = ModelKey.convert_from(key)
         with self._lock:
             if key not in self._complete:
                 _log.warning(f"{key} not marked complete")
@@ -148,7 +65,7 @@ class MainThread(Thread):
         self.net_msgq: PriorityQueue[NetMsg] = net_msgq
         self.disk_msgq: PriorityQueue[DiskMsg] = disk_msgq
         self.msgq: PriorityQueue[MainMsg] = msgq
-        self.stage_complete_registry: dict[modelloader.ModelKey, list[Event]] = dict()
+        self.stage_complete_registry: dict[ModelKey, list[Event]] = dict()
 
     def run(self):
         msg_handler_map = {
@@ -271,7 +188,7 @@ class NetThread(Thread):
 
     def _download(self, msg):
         '''TODO'''
-        subpath = modelloader.ModelLoader._model_subpath(msg.key)
+        subpath = _model_subpath(msg.key)
 
         if msg.files is not None:
             # Download files specified in message.
@@ -332,7 +249,7 @@ class DiskThread(Thread):
 
     def _handle_model_cache_to_stage_cmd(self, msg: ModelCacheToStageCmd):
         '''TODO'''
-        subpath = modelloader.ModelLoader._model_subpath(msg.key)
+        subpath = _model_subpath(msg.key)
         # TODO Handle msg.files?
 
         # TODO Check for missing/dirty files in cache.
@@ -391,7 +308,7 @@ class DiskThread(Thread):
 
     def _handle_model_stage_to_cache_cmd(self, msg: ModelStageToCacheCmd):
         '''TODO'''
-        subpath = modelloader.ModelLoader._model_subpath(msg.key)
+        subpath = _model_subpath(msg.key)
 
         rsync_cmd = [
             'rsync',
@@ -439,7 +356,7 @@ class DiskThread(Thread):
 
     def _handle_model_unstage_cmd(self, msg: ModelUnstageCmd):
         '''TODO'''
-        model_stage_path = self.stagedir / modelloader.ModelLoader._model_subpath(msg.key)
+        model_stage_path = self.stagedir / _model_subpath(msg.key)
         if msg.files:
             for filename in msg.files:
                 path = Path(
