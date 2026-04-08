@@ -4,7 +4,7 @@ from collections.abc import Iterable
 import functools
 import logging
 from queue import PriorityQueue
-from threading import Event
+from threading import Event, Lock
 from typing import NamedTuple, Union
 
 from modelkey import KeyLike, ModelKey
@@ -114,7 +114,8 @@ class ModelLoaderMessager[T]:
     def __init__(self, name: str):
         self.queue: PriorityQueue[ModelLoaderMsgWrapper[T]] = PriorityQueue()
         self.name: str = name
-        self.counter: int = 0
+        self._counter: int = 0
+        self._counter_lock: Lock = Lock()
 
     def send_msg[U](
             self,
@@ -134,14 +135,15 @@ class ModelLoaderMessager[T]:
             *args,
             **kwargs,
     ):
-        msg = ModelLoaderMsgWrapper(
-            priority,
-            self.counter,
-            source,
-            self.name,
-            content,
-        )
-        self.counter += 1
+        with self._counter_lock:
+            msg = ModelLoaderMsgWrapper(
+                priority,
+                self._counter,
+                source,
+                self.name,
+                content,
+            )
+            self._counter += 1
         self.queue.put(msg, *args, **kwargs)
         _log.debug(f"{source}->{self.name} {msg}")
 
