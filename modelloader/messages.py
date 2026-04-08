@@ -180,11 +180,8 @@ class TestModelLoaderMessagerPriority(unittest.TestCase):
 
     @staticmethod
     def msgs_in_order(receiver: ModelLoaderMessager[str], n: int) -> bool:
-        print()
         for i in range(n):
             msg = receiver.get_msg()
-            print(msg)
             if int(msg.content) != i+1:
-                print(f"Got {msg}, expected {i+1}")
                 return False
         return True
