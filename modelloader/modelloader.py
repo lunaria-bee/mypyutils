@@ -5,7 +5,6 @@ from queue import PriorityQueue
 from threading import Event
 from transformers import AutoModel, AutoTokenizer, PreTrainedModel, PreTrainedTokenizer
 from typing import Union
-import unittest
 
 from messages import *
 from modelkey import KeyLike, ModelKey
@@ -218,6 +217,7 @@ class ModelLoader:
         )
 
 
+import unittest
 class TestModelLoaderSequetialUsage(unittest.TestCase):
     # TODO Separate boundaries.
 
