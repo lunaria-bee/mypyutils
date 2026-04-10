@@ -135,6 +135,8 @@ class ModelLoaderMsgWrapper[T](NamedTuple):
 
 
 class ModelLoaderMessager[T]:
+    '''TODO'''
+
     def __init__(self, name: str):
         self.queue: PriorityQueue[ModelLoaderMsgWrapper[T]] = PriorityQueue()
         self.name: str = name
