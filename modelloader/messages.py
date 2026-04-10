@@ -4,7 +4,7 @@ from collections.abc import Iterable
 import functools
 import logging
 from queue import PriorityQueue
-from threading import Event, Lock
+from threading import current_thread, Event, Lock
 from typing import NamedTuple, Union
 
 from modelkey import KeyLike, ModelKey
@@ -155,6 +155,33 @@ class ModelLoaderMessager[T]:
             **kwargs,
     ):
         dest._put_msg(priority, self.name, content, *args, **kwargs)
+
+    def put_msg_from_client(
+            self,
+            priority: int,
+            content: T,
+            *args,
+            **kwargs,
+    ):
+        '''Put a message sent by a :class:`ModelLoader` client onto
+        :attr:`ModelLoaderMessager.queue`.
+
+        We use this function because :class:`ModelLoader` clients do not have
+        :class:`ModelLoaderMessager` objects associated with them.
+
+        :attr:`ModelLoaderMsgWrapper.source` will be the name of the client
+        thread.
+
+        Any ``*args`` and/or ``**kwargs`` will be passed to `Queue.put()`.
+
+        '''
+        self._put_msg(
+            priority,
+            current_thread().name,
+            content,
+            *args,
+            **kwargs,
+        )
 
     def _put_msg(
             self,
