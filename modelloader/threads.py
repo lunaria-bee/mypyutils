@@ -1,3 +1,4 @@
+from dataclasses import dataclass, field
 import huggingface_hub as hfhub
 import logging
 from pathlib import Path
@@ -47,6 +48,28 @@ class CompletionTracker:
                 _log.warning(f"{key} not marked complete")
             self._complete.remove(key)
         _log.debug("EXIT")
+
+
+@dataclass
+class ThreadData:
+    '''Class to bundle data shared between threads.
+
+    All fields are thread safe except for :attr:`cachedir` and :attr:`stagedir`,
+    which should both be treated as read-only.
+
+    '''
+    cachedir: Path
+    stagedir: Path
+    cache_complete: CompletionTracker = \
+        field(default_factory=CompletionTracker)
+    stage_complete: CompletionTracker = \
+        field(default_factory=CompletionTracker)
+    main_msgq: ModelLoaderMessager[MainMsg] = \
+        field(default_factory=lambda: ModelLoaderMessager("main"))
+    net_msgq: ModelLoaderMessager[NetMsg] = \
+        field(default_factory=lambda: ModelLoaderMessager("net"))
+    disk_msgq: ModelLoaderMessager[DiskMsg] = \
+        field(default_factory=lambda: ModelLoaderMessager("disk"))
 
 
 class MainThread(Thread):
