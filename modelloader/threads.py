@@ -467,6 +467,7 @@ import queue
 import tempfile
 import time
 
+
 class TestCompletionTracker(unittest.TestCase):
     def setUp(self):
         self.tracker: CompletionTracker = CompletionTracker()
@@ -488,6 +489,7 @@ class TestCompletionTracker(unittest.TestCase):
     def test_mark_complete_does_not_flag_other_keys_as_complete(self):
         self.tracker.mark_complete(ModelKey('a', None))
         self.assertFalse(self.tracker.is_complete(ModelKey('b', None)))
+
 
 class TestMainThread(unittest.TestCase):
     KEY: ModelKey = ModelKey('EleutherAI/pythia-160m', None)
