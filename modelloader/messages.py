@@ -42,6 +42,9 @@ MSG_HIGH_PRIORITY = 0
 _log = logging.getLogger(__name__) # TODO One logger for entire modelloader submodule.
 
 
+# TODO Rewrite message types using @dataclass.
+
+
 class ModelLoaderMsgBase: pass
 
 
