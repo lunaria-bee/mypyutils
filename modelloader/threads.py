@@ -76,6 +76,10 @@ class ThreadData:
         field(default_factory=lambda: ModelLoaderMessager("disk"))
 
 
+# TODO Factor common thread behavior (such as message retrieval and exit
+# handling).
+
+
 class MainThread(Thread):
     '''Main thread execution class.
 
