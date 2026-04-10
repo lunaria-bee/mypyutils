@@ -6,6 +6,7 @@ from threading import Event, Lock, Thread
 
 from messages import *
 from modelkey import KeyLike, ModelKey
+from util import PathOrStr
 
 
 _log = logging.getLogger(__name__) # TODO One logger for entire modellib submodule.
@@ -377,3 +378,28 @@ class DiskThread(Thread):
                 MSG_HIGH_PRIORITY,
                 msg.key,
             ))
+
+
+import unittest
+
+class TestCompletionTracker(unittest.TestCase):
+    def setUp(self):
+        self.tracker: CompletionTracker = CompletionTracker()
+
+    def test_is_not_complete_before_mark_complete(self):
+        self.assertFalse(self.tracker.is_complete(ModelKey('a', None)))
+
+    def test_is_complete_after_mark_complete(self):
+        key = ModelKey('a', None)
+        self.tracker.mark_complete(key)
+        self.assertTrue(self.tracker.is_complete(key))
+
+    def test_is_not_complete_after_unmark_complete(self):
+        key = ModelKey('a', None)
+        self.tracker.mark_complete(key)
+        self.tracker.unmark_complete(key)
+        self.assertFalse(self.tracker.is_complete(key))
+
+    def test_mark_complete_does_not_flag_other_keys_as_complete(self):
+        self.tracker.mark_complete(ModelKey('a', None))
+        self.assertFalse(self.tracker.is_complete(ModelKey('b', None)))
