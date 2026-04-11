@@ -96,6 +96,12 @@ class ThreadData:
 #    `pointer_path` will just use whatever the caller passed in as the
 #    `revision` argument, usually the revision name.
 #
+# The commit hash corresponding to a revision name is stored in a file in
+# 'refs', but the HF code treats this as potentially stale/unreliable. We're
+# already getting commit hash info when doing dry runs to check for
+# missing/dirty files, so I think the move is to pass commit hashes /
+# `local_path` values in appropriate messages.
+#
 # So, the approach:
 # -- When downloading, just request downloads by repo, revision, and filename,
 #    like I'm already doing. hf_hub_download automatically handles the blobs and
