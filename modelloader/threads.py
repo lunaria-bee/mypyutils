@@ -1,15 +1,15 @@
 from dataclasses import dataclass, field
+import enum
 import huggingface_hub as hfhub
 import logging
 from pathlib import Path
 import queue
-import shutil
 import subprocess
 from threading import Event, Lock, Thread
+from typing import Iterable
 
 from messages import *
 from modelkey import KeyLike, ModelKey
-from util import PathOrStr
 
 
 _log = logging.getLogger(__name__) # TODO One logger for entire modellib submodule.
@@ -76,6 +76,39 @@ class ThreadData:
     disk_msgq: ModelLoaderMessager[DiskMsg] = \
         field(default_factory=lambda: ModelLoaderMessager("disk"))
 
+
+# TODO (MAIN PRIORITY) `DryRunFileInfo.filename` doesn't have adequate
+# information to determine the actual path (incorporating revision info) that
+# will be used for file storage. I will likely need to use
+# `hfhub.file_download._get_pointer_path` to determine that. For different
+# revisions, investigate, understand, and (where applicable) accurately mock the
+# following:
+# -- hfhub.snapshot_download()
+# -- hfhub.hf_hub_download()
+# -- hfhub.file_download._get_pointer_path()
+#
+# In a DryRunFileInfo object:
+# -- `filename` is the name of the file in the git repo
+# -- `local_path` is the path to the symlink to the blob of the actual file.
+# -- `pointer_path` is *theoretically* the symlink path, but it's
+#    unreliable. When files are actually downloaded, HF puts the symlinks in a
+#    folder named after the revision commit hash, but when `dry_run=True`,
+#    `pointer_path` will just use whatever the caller passed in as the
+#    `revision` argument, usually the revision name.
+#
+# So, the approach:
+# -- When downloading, just request downloads by repo, revision, and filename,
+#    like I'm already doing. hf_hub_download automatically handles the blobs and
+#    symlinking and such.
+# -- When copying, get the symlink path from `local_path`, follow it to the
+#    actual blob, and copy both.
+
+# TODO Use `hfhub.constants.DEFAULT_REVISION` instead of hardcoding `main`.
+
+# TODO Clean up:
+#      -- `file` / `path` / `filename` naming schema (especially in test code)
+#      -- `new_msg` message passing patter (just construct directly in fn call)
+#      -- sloppy unit test code
 
 # TODO Factor common thread behavior (such as message retrieval and exit
 # handling).
@@ -255,9 +288,8 @@ class NetThread(Thread):
         :class:`ModelStageToCacheCmd` to :class:`DiskThread`.
 
         '''
-        self._download(msg)
-        # TODO Use `files` field to tell disk thread to only xfer dl'ed files.
-        new_msg = ModelStageToCacheCmd(msg.cmd_id, msg.key, msg.files)
+        files = self._download(msg)
+        new_msg = ModelStageToCacheCmd(msg.cmd_id, msg.key, files)
         self.msgq.send_msg(
             self.thread_data.disk_msgq,
             MSG_HIGH_PRIORITY,
@@ -280,24 +312,20 @@ class NetThread(Thread):
             new_msg,
         )
 
-    def _download(self, msg) -> None:
+    def _download(self, msg) -> list[str]:
         '''TODO'''
-        # TODO Download all missing files in single request? Look at what
-        # snapshot_download() does.
-        subpath: Path = msg.key.model_subpath()
-
         if msg.files is not None:
             # Download files specified in message.
-            files_to_dl = msg.files
+            files_to_dl: set[str] = set(msg.files)
         else:
             # Download files that snapshot download says are missing/dirty in
             # the cache.
-            files_to_dl = set(
+            files_to_dl: set[str] = set(
                 f.filename for f in hfhub.snapshot_download(
                     repo_id=msg.key.hf_path,
                     repo_type='model',
                     revision=msg.key.revision,
-                    cache_dir=self.thread_data.cachedir / subpath,
+                    cache_dir=self.thread_data.cachedir,
                     dry_run=True,
                 ) if f.will_download
             )
@@ -309,9 +337,11 @@ class NetThread(Thread):
                 repo_id=msg.key.hf_path,
                 repo_type='model',
                 revision=msg.key.revision,
-                cache_dir=self.thread_data.stagedir / subpath,
+                cache_dir=self.thread_data.stagedir,
                 filename=filename,
             )
+
+        return list(map(str, files_to_dl))
 
 
 class DiskThread(Thread):
@@ -358,17 +388,16 @@ class DiskThread(Thread):
         :class:`ModelStageCompleteMsg` to :class:`MainThread`.
 
         '''
-        subpath = msg.key.model_subpath()
         # TODO Handle msg.files?
 
         # TODO Check for missing/dirty files in cache.
-        files_to_dl: set[PathOrStr] = set()
-        files_to_stage: set[PathOrStr] = set()
+        files_to_dl: set[str] = set()
+        files_to_stage: set[str] = set()
         for f in hfhub.snapshot_download(
                 repo_id=msg.key.hf_path,
                 repo_type='model',
                 revision=msg.key.revision,
-                cache_dir=self.thread_data.cachedir / subpath,
+                cache_dir=self.thread_data.cachedir,
                 dry_run=True,
         ):
             if f.will_download:
@@ -386,24 +415,8 @@ class DiskThread(Thread):
             )
 
         if files_to_stage:
-            # TODO Refactor.
-            rsync_cmd = [
-                'rsync',
-                '-l', # copy symlinks as symlinks (HF uses symlinks to map model parts to blobs)
-                '-R', # copy path names relative to '/./' in source path
-                '-v', # print info
-            ] + [
-                f'{self.thread_data.cachedir}/./{subpath}/{filename}'
-                for filename in files_to_stage
-            ] + [
-                f'{self.thread_data.stagedir}/{subpath}/',
-            ]
-            rsync_result = subprocess.run(
-                rsync_cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-            )
-            _log.debug(f"rsync output:\n{rsync_result.stdout.decode('utf8')}")
+            _log.debug(f"staging {files_to_stage}")
+            self._rsync(msg.key, files_to_stage, self._RsyncDir.CACHE_TO_STAGE)
 
         if not files_to_dl:
             # Files have been copied to stage and none need to be downloaded, so
@@ -422,29 +435,24 @@ class DiskThread(Thread):
         :class:`MainThread`.
 
         '''
-        subpath = msg.key.model_subpath()
-
-        rsync_cmd = [
-            'rsync',
-            '-l',
-            '-v',
-        ]
-        if msg.files:
-            rsync_cmd.append('-R')
-            rsync_cmd += [
-                f'{self.thread_data.stagedir}/./{subpath}/{filename}'
-                for filename in msg.files
-            ]
+        if msg.files is not None:
+            # Copy files specified in message.
+            files: set[str] = set(msg.files)
         else:
-            rsync_cmd.append(f'{self.thread_data.stagedir}/{subpath}/')
-        rsync_cmd.append(f'{self.thread_data.cachedir}/{subpath}/')
+            # Use snapshot_download dry run to determine files to copy.
+            files: set[str] = set(
+                f.filename for f in hfhub.snapshot_download(
+                    repo_id=msg.key.hf_path,
+                    repo_type='model',
+                    revision=msg.key.revision,
+                    cache_dir=self.thread_data.cachedir,
+                    dry_run=True,
+                )
+            )
 
-        rsync_result = subprocess.run(
-            rsync_cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-        _log.debug(f"rsync output:\n{rsync_result.stdout.decode('utf8')}")
+        _log.debug(f"caching {files}")
+
+        self._rsync(msg.key, files, self._RsyncDir.STAGE_TO_CACHE)
 
         self.msgq.send_msg(
             self.thread_data.main_msgq,
@@ -514,27 +522,97 @@ class DiskThread(Thread):
         :class:`ModelUnstageCompleteMsg` to :class:`MainThread`.
 
         '''
-        model_stage_path = self.thread_data.stagedir / msg.key.model_subpath()
-        if msg.files:
-            for filename in msg.files:
-                path = Path(
-                    model_stage_path,
-                    filename,
-                )
-                if not path.exists():
-                    _log.warning(
-                        f"No such file {filename} for {msg.key} "
-                        f"(expected at {path})"
-                    )
-                path.unlink(missing_ok=True)
+        if msg.files is not None:
+            # Unstage files specified in message.
+            files: set[str] = set(msg.files)
         else:
-            shutil.rmtree(model_stage_path)
+            # Use snapshot_download dry run to determine files to unstage.
+            files: set[str] = set(
+                f.filename for f in hfhub.snapshot_download(
+                    repo_id=msg.key.hf_path,
+                    repo_type='model',
+                    revision=msg.key.revision,
+                    dry_run=True,
+                )
+            )
+
+        _log.debug(f"copying {files}")
+
+        model_repo_folder_name: str = hfhub.file_download.repo_folder_name(
+            repo_id=msg.key.hf_path,
+            repo_type='model',
+        )
+        stage_storage: str = str(Path(
+            self.thread_data.stagedir,
+            model_repo_folder_name,
+        ))
+        for filename in files:
+            path = Path(stage_storage, filename)
+            if not path.exists():
+                _log.warning(
+                    f"No such file {filename} for {msg.key} "
+                    f"(expected at {path})"
+                )
+            path.unlink(missing_ok=True)
 
         self.msgq.send_msg(
             self.thread_data.main_msgq,
             MSG_HIGH_PRIORITY,
             ModelUnstageCompleteMsg(msg.cmd_id, msg.key, msg.files),
         )
+
+    class _RsyncDir(enum.Enum):
+        CACHE_TO_STAGE = enum.auto()
+        STAGE_TO_CACHE = enum.auto()
+
+    def _rsync(
+            self,
+            key: ModelKey,
+            filenames: Iterable[str],
+            direction: _RsyncDir,
+    ) -> subprocess.CompletedProcess:
+        model_repo_folder_name: str = hfhub.file_download.repo_folder_name(
+            repo_id=key.hf_path,
+            repo_type='model',
+        )
+        cache_storage: str = str(Path(
+            self.thread_data.cachedir,
+            model_repo_folder_name,
+        ))
+        stage_storage: str = str(Path(
+            self.thread_data.stagedir,
+            model_repo_folder_name,
+        ))
+
+        match direction:
+            case self._RsyncDir.CACHE_TO_STAGE:
+                source = cache_storage
+                dest = stage_storage
+            case self._RsyncDir.STAGE_TO_CACHE:
+                source = stage_storage
+                dest = cache_storage
+
+        rsync_cmd = [
+            'rsync',
+            '-l', # copy symlinks as symlinks (YF uses symlinks to map model parts to blobs)
+            '-v', # print info
+            '-R', # copy path names relative to '/./' in source path
+        ] + [
+            f'{source}/./{filename}'
+            for filename in filenames
+        ] + [
+            f'{dest}/'
+        ]
+        _log.debug(f"rsync command: {repr(rsync_cmd)}")
+
+        rsync_result = subprocess.run(
+            rsync_cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+        )
+        _log.debug(f"rsync output:\n{rsync_result.stdout.decode('utf8')}")
+
+        return rsync_result
 
 
 import unittest, unittest.mock
@@ -584,6 +662,7 @@ class _TestCaseMockHfHubPatchMixin:
     def _mock_hfhub_snapshot_download(
             repo_id: str,
             *,
+            repo_type: str,
             revision: str | None = None,
             cache_dir: str | Path | None = None,
             dry_run: bool = False,
@@ -593,21 +672,25 @@ class _TestCaseMockHfHubPatchMixin:
             revision = 'main'
 
         if cache_dir is None:
-            raise ValueError("Expected cache_dir to be specified")
+            cache_dir = Path('.')
         else:
             cache_dir = Path(cache_dir)
 
         if not dry_run:
             raise ValueError("Expected dry_run to be True")
 
+        storage_dir = Path(
+            cache_dir,
+            hfhub.file_download.repo_folder_name(repo_id=repo_id, repo_type=repo_type),
+        )
         return [
             hfhub.DryRunFileInfo(
                 commit_hash=revision,
                 file_size=0,
-                filename=filename,
-                local_path=str(cache_dir / repo_id / revision / filename),
-                is_cached=(cache_dir / repo_id / revision / filename).is_file(),
-                will_download=not (cache_dir / repo_id / revision / filename).is_file(),
+                filename=str(Path(revision, filename)),
+                local_path=str(storage_dir / revision / filename),
+                is_cached=(storage_dir / revision / filename).is_file(),
+                will_download=not (storage_dir / revision / filename).is_file(),
             ) for filename in _MOCK_FILENAMES
         ]
 
@@ -616,6 +699,7 @@ class _TestCaseMockHfHubPatchMixin:
             repo_id: str,
             filename: str,
             *,
+            repo_type: str,
             revision: str | None = None,
             cache_dir: str | Path | None = None,
             **_,
@@ -628,9 +712,14 @@ class _TestCaseMockHfHubPatchMixin:
         else:
             cache_dir = Path(cache_dir)
 
-        path = cache_dir / repo_id / revision / filename
+        storage_dir = Path(
+            cache_dir,
+            hfhub.file_download.repo_folder_name(repo_id=repo_id, repo_type=repo_type),
+        )
+        path = storage_dir / filename
         path.parent.mkdir(exist_ok=True, parents=True)
         path.touch()
+        print(path)
         return str(path)
 
 
@@ -646,8 +735,7 @@ def _full_path(
 ) -> Path:
     return (
         basedir
-        / key.model_subpath()
-        / key.hf_path
+        / hfhub.file_download.repo_folder_name(repo_id=key.hf_path, repo_type='model')
         / (key.revision or 'main')
         / filename
     )
@@ -915,8 +1003,9 @@ class TestNetThread(unittest.TestCase, _TestCaseThreadDataMixin, _TestCaseMockHf
     CMD_ID: int = 0
 
     def setUp(self) -> None:
+        logging.basicConfig()
+        _log.setLevel('DEBUG')
         self.set_up_hf_hub_patchers()
-
         self.set_up_thread_data()
         self.net_thread = NetThread(self.thread_data)
         self.net_thread.start()
@@ -925,7 +1014,6 @@ class TestNetThread(unittest.TestCase, _TestCaseThreadDataMixin, _TestCaseMockHf
         self.net_thread._exit = True
         self.net_thread.join()
         self.tear_down_thread_data()
-
         self.tear_down_hf_hub_patchers()
 
     def test_model_download_for_caching_cmd_when_no_files_cached(self):
@@ -971,15 +1059,16 @@ class TestNetThread(unittest.TestCase, _TestCaseThreadDataMixin, _TestCaseMockHf
             for filename in uncached_files
         ))
         # Verify that hf_hub_download was called for uncached files.
+        self._activity_flush()
         for filename in uncached_files:
             self.assertTrue(any(
-                call.kwargs['filename'] == filename
+                call.kwargs['filename'].endswith(filename)
                 for call in hfhub.hf_hub_download.call_args_list
             ))
         # Verify that hf_hub_download was NOT called for cached files.
         for filename in cached_files:
             self.assertFalse(any(
-                call.kwargs['filename'] == filename
+                call.kwargs['filename'].endswith(filename)
                 for call in hfhub.hf_hub_download.call_args_list
             ))
 
@@ -1015,12 +1104,23 @@ class TestNetThread(unittest.TestCase, _TestCaseThreadDataMixin, _TestCaseMockHf
         msg = self.thread_data.disk_msgq.get_msg().content
         self.assertIsInstance(msg, ModelDownloadForStagingCompleteMsg)
         # Check that files exist.
+        self._activity_flush()
         self.assertTrue(all(
             _full_path(self.thread_data.stagedir, self.KEY, filename).is_file()
             for filename in filenames
         ))
         # Check that hf_hub_download called expected number of times.
         self.assertEqual(hfhub.hf_hub_download.call_count, len(filenames))
+
+    def _activity_flush(self):
+        # Push dummy message to net thread and then wait for queue to empty, to
+        # ensure operations are complete.
+        self.thread_data.main_msgq.send_msg(
+            self.thread_data.net_msgq,
+            MSG_NORMAL_PRIORITY,
+            ModelDownloadForCachingCmd(self.CMD_ID+1, ModelKey('arg', 'bla'), []),
+        )
+        _wait_for_empty(self.thread_data.net_msgq.queue)
 
 
 class TestDiskThread(unittest.TestCase, _TestCaseThreadDataMixin, _TestCaseMockHfHubPatchMixin):
@@ -1052,7 +1152,10 @@ class TestDiskThread(unittest.TestCase, _TestCaseThreadDataMixin, _TestCaseMockH
         self.assertIsInstance(msg, ModelDownloadForStagingCmd)
         self.assertEqual(
             set(msg.files) if msg.files else None,
-            set(_MOCK_FILENAMES),
+            set(
+                str(Path(self.KEY.revision or 'main', filename))
+                for filename in _MOCK_FILENAMES
+            ),
         )
         # Verify that stagedir is empty.
         self.assertEqual(
@@ -1080,17 +1183,13 @@ class TestDiskThread(unittest.TestCase, _TestCaseThreadDataMixin, _TestCaseMockH
         self.assertIsInstance(msg, ModelDownloadForStagingCmd)
         self.assertEqual(
             set(msg.files) if msg.files else None,
-            set(uncached_files),
+            set(
+                str(Path(self.KEY.revision or 'main', filename))
+                for filename in uncached_files
+            ),
         )
-        # Push dummy message to disk thread and then wait for queue to empty, to
-        # ensure rsync operations triggered by initial message are complete.
-        self.thread_data.main_msgq.send_msg(
-            self.thread_data.disk_msgq,
-            MSG_NORMAL_PRIORITY,
-            ModelCacheToStageCmd(self.CMD_ID+1, ModelKey('argle', 'blargle'), None),
-        )
-        _wait_for_empty(self.thread_data.disk_msgq.queue)
         # Verify that stagedir contains cached files.
+        self._activity_flush()
         self.assertTrue(all(
             _full_path(self.thread_data.stagedir, self.KEY, filename).is_file()
             for filename in cached_files
@@ -1111,6 +1210,7 @@ class TestDiskThread(unittest.TestCase, _TestCaseThreadDataMixin, _TestCaseMockH
         # Verify no message on net thread msgq.
         self.assertTrue(self.thread_data.net_msgq.queue.empty())
         # Verify that stagedir contains cached files.
+        self._activity_flush()
         self.assertTrue(all(
             _full_path(self.thread_data.stagedir, self.KEY, filename).is_file()
             for filename in _MOCK_FILENAMES
@@ -1132,6 +1232,7 @@ class TestDiskThread(unittest.TestCase, _TestCaseThreadDataMixin, _TestCaseMockH
         msg = self.thread_data.main_msgq.get_msg().content
         self.assertIsInstance(msg, ModelCacheCompleteMsg)
         # Verify that cachedir contains expected files.
+        self._activity_flush()
         self.assertTrue(all(
             _full_path(self.thread_data.stagedir, self.KEY, filename).is_file()
             for filename in _MOCK_FILENAMES
@@ -1145,17 +1246,22 @@ class TestDiskThread(unittest.TestCase, _TestCaseThreadDataMixin, _TestCaseMockH
             path.parent.mkdir(exist_ok=True, parents=True)
             path.touch()
         # Send command.
+        files = [
+            str(Path(self.KEY.revision or 'main', filename))
+            for filename in filenames
+        ]
         self.thread_data.net_msgq.send_msg(
             self.thread_data.disk_msgq,
             MSG_HIGH_PRIORITY,
-            ModelStageToCacheCmd(self.CMD_ID, self.KEY, filenames),
+            ModelStageToCacheCmd(self.CMD_ID, self.KEY, files),
         )
         # Check main thread msgq for ModelCacheCompleteMsg.
         msg = self.thread_data.main_msgq.get_msg().content
         self.assertIsInstance(msg, ModelCacheCompleteMsg)
         # Verify that cachedir contains expected files.
+        self._activity_flush()
         self.assertTrue(all(
-            _full_path(self.thread_data.stagedir, self.KEY, filename).is_file()
+            _full_path(self.thread_data.cachedir, self.KEY, filename).is_file()
             for filename in filenames
         ))
 
@@ -1166,24 +1272,31 @@ class TestDiskThread(unittest.TestCase, _TestCaseThreadDataMixin, _TestCaseMockH
             path.parent.mkdir(exist_ok=True, parents=True)
             path.touch()
         # Send message.
+        files = [
+            str(Path(self.KEY.revision or 'main', filename))
+            for filename in _MOCK_FILENAMES
+        ]
         self.thread_data.net_msgq.send_msg(
             self.thread_data.disk_msgq,
             MSG_HIGH_PRIORITY,
-            ModelDownloadForStagingCompleteMsg(self.CMD_ID, self.KEY, _MOCK_FILENAMES),
+            ModelDownloadForStagingCompleteMsg(self.CMD_ID, self.KEY, files),
         )
         # Check main thread msgq for ModelStageCompleteMsg.
         msg = self.thread_data.main_msgq.get_msg().content
         self.assertIsInstance(msg, ModelStageCompleteMsg)
+        # Verify that cachedir contains expected files.
+        self._activity_flush()
+        self.assertTrue(all(
+            _full_path(self.thread_data.cachedir, self.KEY, filename).is_file()
+            for filename in _MOCK_FILENAMES
+        ))
+
+    def _activity_flush(self):
         # Push dummy message to disk thread and then wait for queue to empty, to
         # ensure rsync operations are complete.
         self.thread_data.main_msgq.send_msg(
             self.thread_data.disk_msgq,
             MSG_NORMAL_PRIORITY,
-            ModelCacheToStageCmd(self.CMD_ID+1, ModelKey('argle', 'blargle'), None),
+            ModelCacheToStageCmd(self.CMD_ID+1, ModelKey('arg', 'bla'), None),
         )
         _wait_for_empty(self.thread_data.disk_msgq.queue)
-        # Verify that cachedir contains expected files.
-        self.assertTrue(all(
-            _full_path(self.thread_data.cachedir, self.KEY, filename).is_file()
-            for filename in _MOCK_FILENAMES
-        ))

@@ -59,11 +59,11 @@ class ModelLoaderKeyFilesMsgBase(ModelLoaderMsgBase):
             self,
             cmd_id: int,
             key: KeyLike,
-            files: Union[Iterable[PathOrStr], None],
+            files: Union[Iterable[str], None],
     ):
         self.cmd_id: int = cmd_id
         self.key: ModelKey = ModelKey.convert_from(key)
-        self.files: Union[Iterable[PathOrStr], None] = files
+        self.files: Union[Iterable[str], None] = files
 
 
 # Top level commands.
