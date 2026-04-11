@@ -3,7 +3,6 @@ import huggingface_hub as hfhub
 import logging
 from pathlib import Path
 import queue
-from queue import PriorityQueue
 import shutil
 import subprocess
 from threading import Event, Lock, Thread
