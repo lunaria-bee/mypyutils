@@ -12,7 +12,7 @@ from messages import *
 from modelkey import KeyLike, ModelKey
 
 
-_log = logging.getLogger(__name__) # TODO One logger for entire modellib submodule.
+_log = logging.getLogger(__name__)
 
 
 MAX_BLOCK_SECS: float = 1.

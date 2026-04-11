@@ -39,7 +39,7 @@ MSG_NORMAL_PRIORITY = 50
 MSG_HIGH_PRIORITY = 0
 
 
-_log = logging.getLogger(__name__) # TODO One logger for entire modelloader submodule.
+_log = logging.getLogger(__name__)
 
 
 # TODO Rewrite message types using @dataclass.

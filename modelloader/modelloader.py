@@ -22,7 +22,7 @@ from util import PathOrStr
 # and receipt.
 
 
-_log = logging.getLogger(__name__) # TODO One logger for entire modellib submodule.
+_log = logging.getLogger(__name__)
 
 
 # TODO A tuple of two HF paths (2 keys) is indistinguishable from a (hf path,
