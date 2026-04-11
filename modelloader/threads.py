@@ -505,29 +505,35 @@ class TestCompletionTracker(unittest.TestCase):
         self.assertFalse(self.tracker.is_complete(ModelKey('b', None)))
 
 
-class TestMainThread(unittest.TestCase):
-    KEY: ModelKey = ModelKey('EleutherAI/pythia-160m', None)
-    CMD_ID: int = 0
-
-    def setUp(self) -> None:
-        self.cachedir_handle = tempfile.TemporaryDirectory(
-            prefix="modelloader_test_cache_"
-        )
-        self.stagedir_handle = tempfile.TemporaryDirectory(
-            prefix="modelloader_test_stage_"
-        )
+class _ThreadDataTestCaseMixin:
+    def set_up_thread_data(self):
+        self.cachedir_handle: tempfile.TemporaryDirectory = \
+            tempfile.TemporaryDirectory(prefix="modelloader_test_cache_")
+        self.stagedir_handle: tempfile.TemporaryDirectory = \
+            tempfile.TemporaryDirectory(prefix="modelloader_test_stage_")
         self.thread_data: ThreadData = ThreadData(
             Path(self.cachedir_handle.name),
             Path(self.stagedir_handle.name),
         )
+
+    def tear_down_thread_data(self):
+        self.cachedir_handle.cleanup()
+        self.stagedir_handle.cleanup()
+
+
+class TestMainThread(unittest.TestCase, _ThreadDataTestCaseMixin):
+    KEY: ModelKey = ModelKey('EleutherAI/pythia-160m', None)
+    CMD_ID: int = 0
+
+    def setUp(self) -> None:
+        self.set_up_thread_data()
         self.main_thread: MainThread = MainThread(self.thread_data)
         self.main_thread.start()
 
     def tearDown(self) -> None:
         self.main_thread._exit = True
         self.main_thread.join()
-        self.cachedir_handle.cleanup()
-        self.stagedir_handle.cleanup()
+        self.tear_down_thread_data()
 
     def test_model_cache_cmd_when_not_cached(self):
         # Send cache command.
@@ -805,14 +811,8 @@ def _mock_hfhub_hf_hub_download(
     return str(path)
 
 
-class TestNetThread(unittest.TestCase):
-    # TODO Stub out mock HF components?
-
-    KEY: ModelKey = ModelKey('foo', 'bar')
-    CMD_ID: int = 0
-
-    def setUp(self) -> None:
-        # Mock patchers.
+class _MockHfHubPatchMixin:
+    def set_up_hf_hub_patchers(self):
         self.hfhub_snapshot_download_patcher = unittest.mock.patch(
             'huggingface_hub.snapshot_download',
             side_effect=_mock_hfhub_snapshot_download,
@@ -824,25 +824,28 @@ class TestNetThread(unittest.TestCase):
         self.hfhub_snapshot_download_patcher.start()
         self.hfhub_hf_hub_download_patcher.start()
 
-        # Thread + data.
-        self.cachedir_handle: tempfile.TemporaryDirectory
-        self.stagedir_handle: tempfile.TemporaryDirectory
-        self.thread_data: ThreadData
-        self.cachedir_handle, self.stagedir_handle, self.thread_data = \
-            _make_test_common_data()
+    def tear_down_hf_hub_patchers(self):
+        self.hfhub_snapshot_download_patcher.stop()
+        self.hfhub_hf_hub_download_patcher.stop()
+
+
+class TestNetThread(unittest.TestCase, _ThreadDataTestCaseMixin, _MockHfHubPatchMixin):
+    KEY: ModelKey = ModelKey('foo', 'bar')
+    CMD_ID: int = 0
+
+    def setUp(self) -> None:
+        self.set_up_hf_hub_patchers()
+
+        self.set_up_thread_data()
         self.net_thread = NetThread(self.thread_data)
         self.net_thread.start()
 
     def tearDown(self) -> None:
-        # Thread + data.
         self.net_thread._exit = True
         self.net_thread.join()
-        self.cachedir_handle.cleanup()
-        self.stagedir_handle.cleanup()
+        self.tear_down_thread_data()
 
-        # Mock patchers.
-        self.hfhub_snapshot_download_patcher.stop()
-        self.hfhub_hf_hub_download_patcher.stop()
+        self.tear_down_hf_hub_patchers()
 
     def test_model_download_for_caching_cmd_when_no_files_cached(self):
         # Send command.
