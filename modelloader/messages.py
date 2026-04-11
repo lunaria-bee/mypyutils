@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from dataclasses import dataclass
 import functools
 import logging
 from queue import PriorityQueue
 from threading import current_thread, Event, Lock
-from typing import NamedTuple, Union
+from typing import NamedTuple, Optional, Union
 
-from modelkey import KeyLike, ModelKey
+from modelkey import ModelKey
 
 
 __all__ = (
@@ -44,53 +45,106 @@ _log = logging.getLogger(__name__)
 # TODO Rewrite message types using @dataclass.
 
 
-class ModelLoaderMsgBase: pass
-
-
-class ModelLoaderKeyMsgBase(ModelLoaderMsgBase):
-    def __init__(self, cmd_id: int, key: KeyLike):
-        self.cmd_id: int = cmd_id
-        self.key: ModelKey = ModelKey.convert_from(key)
-
-
-class ModelLoaderKeyFilesMsgBase(ModelLoaderMsgBase):
-    def __init__(
-            self,
-            cmd_id: int,
-            key: KeyLike,
-            files: Union[Iterable[str], None],
-    ):
-        self.cmd_id: int = cmd_id
-        self.key: ModelKey = ModelKey.convert_from(key)
-        self.files: Union[Iterable[str], None] = files
-
-
 # Top level commands.
-class ModelCacheCmd(ModelLoaderKeyMsgBase): pass
-class ModelStageCmd(ModelLoaderKeyMsgBase): pass
+@dataclass
+class ModelCacheCmd:
+    '''Client→:class:`MainThread`: Cache model identified by ``key``.'''
+    op_id: int
+    key: ModelKey
 
-class ModelRegisterForStageCompleteCmd(ModelLoaderMsgBase):
-    def __init__(self, key: KeyLike, event: Event):
-        self.key: ModelKey = ModelKey.convert_from(key)
-        self.event: Event = event
+@dataclass
+class ModelStageCmd:
+    '''Client→:class:`MainThread`: Stage model identified by ``key``.'''
+    op_id: int
+    key: ModelKey
 
-# Net thread commands.
-class ModelDownloadForCachingCmd(ModelLoaderKeyFilesMsgBase): pass
-class ModelDownloadForStagingCmd(ModelLoaderKeyFilesMsgBase): pass
+@dataclass
+class ModelRegisterForStageCompleteCmd:
+    '''Client→:class:`MainThread`: :meth:`~threading.Event.set()` ``event`` once
+    model identified by ``key`` has been staged.'''
+    key: ModelKey
+    event: Event
 
-# Disk thread commands.
-class ModelCacheToStageCmd(ModelLoaderKeyFilesMsgBase): pass
-class ModelStageToCacheCmd(ModelLoaderKeyFilesMsgBase): pass
-class ModelUnstageCmd(ModelLoaderKeyFilesMsgBase): pass
+@dataclass
+class ModelUnstageCmd:
+    '''Client→:class:`MainThread`: Unstage model identified by ``key``.'''
+    op_id: int
+    key: ModelKey
 
-# Task completion messages.
-class ModelDownloadForStagingCompleteMsg(ModelLoaderKeyFilesMsgBase): pass
-class ModelCacheCompleteMsg(ModelLoaderKeyMsgBase): pass
-class ModelStageCompleteMsg(ModelLoaderKeyMsgBase): pass
-class ModelUnstageCompleteMsg(ModelLoaderKeyFilesMsgBase): pass
+@dataclass
+class ModelDownloadForCachingCmd:
+    ''':class:`MainThread`→:class:`NetThread`: Download missing/dirty files for
+    model identified by ``key``, to be copied to cache.'''
+    op_id: int
+    key: ModelKey
+    filenames: Optional[Iterable[str]]
+
+@dataclass
+class ModelDownloadForStagingCmd:
+    ''':class:`DiskThread`→:class:`NetThread`: Download missing/dirty files for
+    model identified by ``key``, to remain in stage.'''
+    op_id: int
+    key: ModelKey
+    filenames: Optional[Iterable[str]]
+
+@dataclass
+class ModelDownloadForStagingCompleteMsg:
+    ''':class:`NetThread`→:class:`DiskThread`: Signal completion of
+    :class:`ModelDownloadForStagingCmd`, with files downloaded to
+    ``local_paths``.'''
+    op_id: int
+    key: ModelKey
+    local_paths: Iterable[str]
+
+@dataclass
+class ModelCacheToStageCmd:
+    ''':class:`MainThread`→:class:`DiskThread`: Copy files for model identified
+    by ``key`` from cache to stage.'''
+    op_id: int
+    key: ModelKey
+    filenames: Optional[Iterable[str]]
+
+@dataclass
+class ModelStageToCacheCmd:
+    '''[:class:`NetThread`, :class:`DiskThread`]→:class:`DiskThread`: Copy
+    files for model identified by ``key`` from stage to cache.'''
+    op_id: int
+    key: ModelKey
+    filenames: Optional[Iterable[str]]
+
+@dataclass
+class ModelRmFromStageCmd:
+    ''':class:`MainThread`→:class:`DiskThread`: Remove files for model
+    identified by ``key`` from stage.'''
+    op_id: int
+    key: ModelKey
+    filenames: Optional[Iterable[str]]
+
+@dataclass
+class ModelCacheCompleteMsg:
+    ''':class:`DiskThread`→:class:`MainThread`: Signal completion of
+    :class:`ModelCacheCmd`.'''
+    op_id: int
+    key: ModelKey
+
+@dataclass
+class ModelStageCompleteMsg:
+    ''':class:`DiskThread`→:class:`MainThread`: Signal completion of
+    :class:`ModelStageCmd`.'''
+    op_id: int
+    key: ModelKey
+
+@dataclass
+class ModelUnstageCompleteMsg:
+    ''':class:`DiskThread`→:class:`MainThread`: Signal completion of
+    :class:`ModelUnstageCmd`.'''
+    op_id: int
+    key: ModelKey
 
 # Exit command.
-class ThreadExitCmd(ModelLoaderMsgBase): pass
+class ThreadExitCmd: # TODO use
+    '''Command thread to exit.'''
+    pass
 
 
 type MainMsg = Union[
