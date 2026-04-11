@@ -167,7 +167,7 @@ class MainThread(Thread):
         if self.thread_data.cache_complete.is_complete(msg.key):
             _log.debug(f"{msg.key} cached: do nothing")
         else:
-            new_msg = ModelDownloadForCachingCmd(msg.cmd_id, msg.key, None)
+            new_msg = ModelDownloadForCachingCmd(msg.op_id, msg.key, None)
             self.msgq.send_msg(
                 self.thread_data.net_msgq,
                 MSG_NORMAL_PRIORITY,
@@ -184,7 +184,7 @@ class MainThread(Thread):
         if self.thread_data.stage_complete.is_complete(msg.key):
             _log.debug(f"{msg.key} staged: do nothing")
         else:
-            new_msg = ModelCacheToStageCmd(msg.cmd_id, msg.key, None)
+            new_msg = ModelCacheToStageCmd(msg.op_id, msg.key, None)
             self.msgq.send_msg(
                 self.thread_data.disk_msgq,
                 MSG_NORMAL_PRIORITY,
@@ -294,12 +294,11 @@ class NetThread(Thread):
         :class:`ModelStageToCacheCmd` to :class:`DiskThread`.
 
         '''
-        files = self._download(msg)
-        new_msg = ModelStageToCacheCmd(msg.cmd_id, msg.key, files)
+        local_paths = self._download(msg)
         self.msgq.send_msg(
             self.thread_data.disk_msgq,
             MSG_HIGH_PRIORITY,
-            new_msg,
+            ModelStageToCacheCmd(msg.op_id, msg.key, local_paths),
         )
         # TODO Unstage?
 
@@ -310,19 +309,18 @@ class NetThread(Thread):
         :class:`ModelDownloadForStagingCompleteMsg` to :class:`DiskThread`.
 
         '''
-        self._download(msg)
-        new_msg = ModelDownloadForStagingCompleteMsg(msg.cmd_id, msg.key, msg.files)
+        local_paths = self._download(msg)
         self.msgq.send_msg(
             self.thread_data.disk_msgq,
             MSG_HIGH_PRIORITY,
-            new_msg,
+            ModelDownloadForStagingCompleteMsg(msg.op_id, msg.key, local_paths),
         )
 
     def _download(self, msg) -> list[str]:
         '''TODO'''
-        if msg.files is not None:
+        if msg.filenames is not None:
             # Download files specified in message.
-            files_to_dl: set[str] = set(msg.files)
+            files_to_dl: set[str] = set(msg.filenames)
         else:
             # Download files that snapshot download says are missing/dirty in
             # the cache.
@@ -338,16 +336,17 @@ class NetThread(Thread):
         _log.debug(f"downloading {files_to_dl}")
 
         # Execute download.
-        for filename in files_to_dl:
+        local_paths = [
             hfhub.hf_hub_download(
                 repo_id=msg.key.hf_path,
                 repo_type='model',
                 revision=msg.key.revision,
                 cache_dir=self.thread_data.stagedir,
                 filename=filename,
-            )
+            ) for filename in files_to_dl
+        ]
 
-        return list(map(str, files_to_dl))
+        return local_paths
 
 
 class DiskThread(Thread):
@@ -366,7 +365,7 @@ class DiskThread(Thread):
             ModelCacheToStageCmd: self._handle_model_cache_to_stage_cmd,
             ModelStageToCacheCmd: self._handle_model_stage_to_cache_cmd,
             ModelDownloadForStagingCompleteMsg: self._handle_model_download_for_staging_complete_msg,
-            ModelUnstageCmd: self._handle_model_unstage_cmd,
+            ModelUnstageCmd: self._handle_model_rm_from_stage_cmd,
         }
         while not self._exit:
             try:
@@ -385,7 +384,7 @@ class DiskThread(Thread):
 
         If any files need to be downloaded, send
         :class:`ModelDownloadForStagingCmd` to :class:`NetThread` with the
-        :attr:`ModelDownloadForStagingCmd.files` field set accordingly. Then,
+        :attr:`ModelDownloadForStagingCmd.filenames` field set accordingly. Then,
         stage any files that are already cached. :class:`DiskThread` will
         complete the staging process upon receiving
         :class:`ModelDownloadForStagingCompleteMsg` from :class:`NetThread`.
@@ -394,11 +393,10 @@ class DiskThread(Thread):
         :class:`ModelStageCompleteMsg` to :class:`MainThread`.
 
         '''
-        # TODO Handle msg.files?
+        # TODO Handle msg.filenames?
 
-        # TODO Check for missing/dirty files in cache.
-        files_to_dl: set[str] = set()
-        files_to_stage: set[str] = set()
+        filenames_for_dl: list[str] = []
+        local_paths_for_stage: list[str] = []
         for f in hfhub.snapshot_download(
                 repo_id=msg.key.hf_path,
                 repo_type='model',
@@ -407,30 +405,31 @@ class DiskThread(Thread):
                 dry_run=True,
         ):
             if f.will_download:
-                files_to_dl.add(f.filename)
+                filenames_for_dl.append(f.filename)
             else:
-                files_to_stage.add(f.filename)
+                local_paths_for_stage.append(f.local_path)
 
-        if files_to_dl:
+        if filenames_for_dl:
             # Tell net thread to download missing/dirty files and report back
             # with ModelDownloadForStagingCompleteMsg when it is done.
             self.msgq.send_msg(
                 self.thread_data.net_msgq,
                 MSG_HIGH_PRIORITY,
-                ModelDownloadForStagingCmd(msg.cmd_id, msg.key, files_to_dl)
+                ModelDownloadForStagingCmd(msg.op_id, msg.key, filenames_for_dl),
             )
 
-        if files_to_stage:
-            _log.debug(f"staging {files_to_stage}")
-            self._rsync(msg.key, files_to_stage, self._RsyncDir.CACHE_TO_STAGE)
+        if local_paths_for_stage:
+            # Stage files that are already cached.
+            _log.debug(f"staging {local_paths_for_stage}")
+            self._rsync(msg.key, local_paths_for_stage, self._RsyncDir.CACHE_TO_STAGE)
 
-        if not files_to_dl:
+        if not filenames_for_dl:
             # Files have been copied to stage and none need to be downloaded, so
             # report ModelStageCompleteMsg back to main thread.
             self.msgq.send_msg(
                 self.thread_data.main_msgq,
                 MSG_HIGH_PRIORITY,
-                ModelStageCompleteMsg(msg.cmd_id, msg.key),
+                ModelStageCompleteMsg(msg.op_id, msg.key),
             )
 
     def _handle_model_stage_to_cache_cmd(self, msg: ModelStageToCacheCmd):
@@ -441,13 +440,13 @@ class DiskThread(Thread):
         :class:`MainThread`.
 
         '''
-        if msg.files is not None:
+        if msg.local_paths is not None:
             # Copy files specified in message.
-            files: set[str] = set(msg.files)
+            local_paths: set[str] = set(msg.local_paths)
         else:
             # Use snapshot_download dry run to determine files to copy.
-            files: set[str] = set(
-                f.filename for f in hfhub.snapshot_download(
+            local_paths: set[str] = set(
+                f.local_path for f in hfhub.snapshot_download(
                     repo_id=msg.key.hf_path,
                     repo_type='model',
                     revision=msg.key.revision,
@@ -456,14 +455,14 @@ class DiskThread(Thread):
                 )
             )
 
-        _log.debug(f"caching {files}")
+        _log.debug(f"caching {local_paths}")
 
-        self._rsync(msg.key, files, self._RsyncDir.STAGE_TO_CACHE)
+        self._rsync(msg.key, local_paths, self._RsyncDir.STAGE_TO_CACHE)
 
         self.msgq.send_msg(
             self.thread_data.main_msgq,
             MSG_HIGH_PRIORITY,
-            ModelCacheCompleteMsg(msg.cmd_id, msg.key),
+            ModelCacheCompleteMsg(msg.op_id, msg.key),
         )
 
     def _handle_model_download_for_staging_complete_msg(
@@ -511,30 +510,30 @@ class DiskThread(Thread):
         self.msgq.send_msg(
             self.thread_data.main_msgq,
             MSG_HIGH_PRIORITY,
-            ModelStageCompleteMsg(msg.cmd_id, msg.key),
+            ModelStageCompleteMsg(msg.op_id, msg.key),
         )
         self.msgq.send_msg(
             self.msgq,
             MSG_HIGH_PRIORITY,
-            ModelStageToCacheCmd(msg.cmd_id, msg.key, msg.files),
+            ModelStageToCacheCmd(msg.op_id, msg.key, msg.local_paths),
         )
 
-    def _handle_model_unstage_cmd(self, msg: ModelUnstageCmd):
+    def _handle_model_rm_from_stage_cmd(self, msg: ModelRmFromStageCmd):
         '''Handle :class:`ModelUnstageCmd`.
 
-        Remove requested :ref:`files <ModelUnstageCmd.files>`, or, if
-        :attr:`msg.files <ModelUnstageCmd.files>` is ``None``, remove entire
+        Remove requested :ref:`files <ModelUnstageCmd.filenames>`, or, if
+        :attr:`msg.filenames <ModelUnstageCmd.filenames>` is ``None``, remove entire
         staging directory for requested model. Then, send
         :class:`ModelUnstageCompleteMsg` to :class:`MainThread`.
 
         '''
-        if msg.files is not None:
+        if msg.local_paths is not None:
             # Unstage files specified in message.
-            files: set[str] = set(msg.files)
+            local_paths: set[str] = set(msg.local_paths)
         else:
             # Use snapshot_download dry run to determine files to unstage.
-            files: set[str] = set(
-                f.filename for f in hfhub.snapshot_download(
+            local_paths: set[str] = set(
+                f.local_path for f in hfhub.snapshot_download(
                     repo_id=msg.key.hf_path,
                     repo_type='model',
                     revision=msg.key.revision,
@@ -542,29 +541,34 @@ class DiskThread(Thread):
                 )
             )
 
-        _log.debug(f"copying {files}")
+        _log.debug(f"rm {local_paths}")
 
-        model_repo_folder_name: str = hfhub.file_download.repo_folder_name(
-            repo_id=msg.key.hf_path,
-            repo_type='model',
-        )
-        stage_storage: str = str(Path(
-            self.thread_data.stagedir,
-            model_repo_folder_name,
-        ))
-        for filename in files:
-            path = Path(stage_storage, filename)
-            if not path.exists():
-                _log.warning(
-                    f"No such file {filename} for {msg.key} "
-                    f"(expected at {path})"
-                )
-            path.unlink(missing_ok=True)
+        for local_path in local_paths:
+            # TODO Follow symlink to blob and remove.
+            # TODO Remove symlink.
+            pass
+
+        # model_repo_folder_name: str = hfhub.file_download.repo_folder_name(
+        #     repo_id=msg.key.hf_path,
+        #     repo_type='model',
+        # )
+        # stage_storage: str = str(Path(
+        #     self.thread_data.stagedir,
+        #     model_repo_folder_name,
+        # ))
+        # for filename in files:
+        #     path = Path(stage_storage, filename)
+        #     if not path.exists():
+        #         _log.warning(
+        #             f"No such file {filename} for {msg.key} "
+        #             f"(expected at {path})"
+        #         )
+        #     path.unlink(missing_ok=True)
 
         self.msgq.send_msg(
             self.thread_data.main_msgq,
             MSG_HIGH_PRIORITY,
-            ModelUnstageCompleteMsg(msg.cmd_id, msg.key, msg.files),
+            ModelUnstageCompleteMsg(msg.op_id, msg.key),
         )
 
     class _RsyncDir(enum.Enum):
@@ -574,9 +578,11 @@ class DiskThread(Thread):
     def _rsync(
             self,
             key: ModelKey,
-            filenames: Iterable[str],
+            local_paths: Iterable[str],
             direction: _RsyncDir,
     ) -> subprocess.CompletedProcess:
+        # TODO Copy blob and symlink, inserting '/./' into the appropriate
+        # section of the path to ensure correct relative copy.
         model_repo_folder_name: str = hfhub.file_download.repo_folder_name(
             repo_id=key.hf_path,
             repo_type='model',
@@ -648,6 +654,7 @@ class _TestCaseThreadDataMixin:
 
 
 class _TestCaseMockHfHubPatchMixin:
+    # TODO Bring more in line with HF behavior.
     def set_up_hf_hub_patchers(self):
         self.hfhub_snapshot_download_patcher = unittest.mock.patch(
             'huggingface_hub.snapshot_download',
@@ -772,7 +779,7 @@ class TestCompletionTracker(unittest.TestCase):
 
 class TestMainThread(unittest.TestCase, _TestCaseThreadDataMixin):
     KEY: ModelKey = ModelKey('EleutherAI/pythia-160m', None)
-    CMD_ID: int = 0
+    OP_ID: int = 0
 
     def setUp(self) -> None:
         self.set_up_thread_data()
@@ -788,7 +795,7 @@ class TestMainThread(unittest.TestCase, _TestCaseThreadDataMixin):
         # Send cache command.
         self.thread_data.main_msgq.put_msg_from_client(
             MSG_NORMAL_PRIORITY,
-            ModelCacheCmd(self.CMD_ID, self.KEY),
+            ModelCacheCmd(self.OP_ID, self.KEY),
         )
         # Check net thread msgq for ModelDownloadForCachingCmd.
         msg = self.thread_data.net_msgq.get_msg().content
@@ -797,13 +804,13 @@ class TestMainThread(unittest.TestCase, _TestCaseThreadDataMixin):
         self.thread_data.net_msgq.send_msg(
             self.thread_data.disk_msgq,
             MSG_HIGH_PRIORITY,
-            ModelStageToCacheCmd(msg.cmd_id, msg.key, msg.files),
+            ModelStageToCacheCmd(msg.op_id, msg.key, msg.filenames),
         )
         msg = self.thread_data.disk_msgq.get_msg().content
         self.thread_data.disk_msgq.send_msg(
             self.thread_data.main_msgq,
             MSG_HIGH_PRIORITY,
-            ModelCacheCompleteMsg(msg.cmd_id, msg.key),
+            ModelCacheCompleteMsg(msg.op_id, msg.key),
         )
         # Check model is marked as cached.
         _wait_for_empty(self.thread_data.main_msgq.queue)
@@ -817,7 +824,7 @@ class TestMainThread(unittest.TestCase, _TestCaseThreadDataMixin):
         # Send cache command.
         self.thread_data.main_msgq.put_msg_from_client(
             MSG_NORMAL_PRIORITY,
-            ModelCacheCmd(self.CMD_ID, self.KEY),
+            ModelCacheCmd(self.OP_ID, self.KEY),
         )
         # Verify no messages in system.
         _wait_for_empty(self.thread_data.main_msgq.queue)
@@ -828,7 +835,7 @@ class TestMainThread(unittest.TestCase, _TestCaseThreadDataMixin):
         # Send stage command.
         self.thread_data.main_msgq.put_msg_from_client(
             MSG_NORMAL_PRIORITY,
-            ModelStageCmd(self.CMD_ID, self.KEY),
+            ModelStageCmd(self.OP_ID, self.KEY),
         )
         # Check disk thread msgq for ModelCacheToStageCmd.
         msg = self.thread_data.disk_msgq.get_msg().content
@@ -837,7 +844,7 @@ class TestMainThread(unittest.TestCase, _TestCaseThreadDataMixin):
         self.thread_data.disk_msgq.send_msg(
             self.thread_data.main_msgq,
             MSG_HIGH_PRIORITY,
-            ModelStageCompleteMsg(msg.cmd_id, msg.key),
+            ModelStageCompleteMsg(msg.op_id, msg.key),
         )
         # Check model is marked as staged.
         _wait_for_empty(self.thread_data.main_msgq.queue)
@@ -851,7 +858,7 @@ class TestMainThread(unittest.TestCase, _TestCaseThreadDataMixin):
         # Send stage comand.
         self.thread_data.main_msgq.put_msg_from_client(
             MSG_NORMAL_PRIORITY,
-            ModelStageCmd(self.CMD_ID, self.KEY),
+            ModelStageCmd(self.OP_ID, self.KEY),
         )
         # Verify no messages in system.
         _wait_for_empty(self.thread_data.main_msgq.queue)
@@ -869,7 +876,7 @@ class TestMainThread(unittest.TestCase, _TestCaseThreadDataMixin):
         _wait_for_empty(self.thread_data.main_msgq.queue)
         self.assertFalse(event.is_set())
         # Mock model staging.
-        self._mock_model_staging(self.CMD_ID, self.KEY)
+        self._mock_model_staging(self.OP_ID, self.KEY)
         # Check event is set.
         _wait_for_empty(self.thread_data.main_msgq.queue)
         self.assertTrue(event.is_set())
@@ -886,7 +893,7 @@ class TestMainThread(unittest.TestCase, _TestCaseThreadDataMixin):
         # Check events not set.
         self.assertFalse(any(e.is_set() for e in events))
         # Mock model staging process.
-        self._mock_model_staging(self.CMD_ID, self.KEY)
+        self._mock_model_staging(self.OP_ID, self.KEY)
         # Check events are set.
         _wait_for_empty(self.thread_data.main_msgq.queue)
         self.assertTrue(all(e.is_set() for e in events))
@@ -894,8 +901,8 @@ class TestMainThread(unittest.TestCase, _TestCaseThreadDataMixin):
     def test_model_register_for_stage_complete_cmd_with_multiple_models_and_single_event_per_model_when_models_are_not_staged(self):
         key1 = self.KEY
         key2 = ModelKey(self.KEY.hf_path, 'step1')
-        cmd_id_1 = self.CMD_ID
-        cmd_id_2 = self.CMD_ID + 1
+        cmd_id_1 = self.OP_ID
+        cmd_id_2 = self.OP_ID + 1
         # Register events.
         event1 = Event()
         self.thread_data.main_msgq.put_msg_from_client(
@@ -926,8 +933,8 @@ class TestMainThread(unittest.TestCase, _TestCaseThreadDataMixin):
     def test_model_register_for_stage_complete_with_multiple_models_and_multiple_events_per_model_when_models_are_not_staged(self):
         key1 = self.KEY
         key2 = ModelKey(self.KEY.hf_path, 'step1')
-        cmd_id_1 = self.CMD_ID
-        cmd_id_2 = self.CMD_ID + 1
+        cmd_id_1 = self.OP_ID
+        cmd_id_2 = self.OP_ID + 1
         # Register events.
         events1 = [Event(), Event()]
         for e in events1:
@@ -959,7 +966,7 @@ class TestMainThread(unittest.TestCase, _TestCaseThreadDataMixin):
 
     def test_model_register_for_stage_complete_cmd_with_single_model_and_single_event_when_model_is_staged(self):
         # Mock model staging.
-        self._mock_model_staging(self.CMD_ID, self.KEY)
+        self._mock_model_staging(self.OP_ID, self.KEY)
         # Send register command.
         event = Event()
         self.thread_data.main_msgq.put_msg_from_client(
@@ -975,7 +982,7 @@ class TestMainThread(unittest.TestCase, _TestCaseThreadDataMixin):
 
     def test_model_register_for_stage_complete_cmd_with_single_model_and_multiple_events_when_model_is_staged(self):
         # Mock model staging.
-        self._mock_model_staging(self.CMD_ID, self.KEY)
+        self._mock_model_staging(self.OP_ID, self.KEY)
         # Register events.
         events = [Event(), Event()]
         for e in events:
@@ -1000,13 +1007,13 @@ class TestMainThread(unittest.TestCase, _TestCaseThreadDataMixin):
         self.thread_data.disk_msgq.send_msg(
             self.thread_data.main_msgq,
             MSG_HIGH_PRIORITY,
-            ModelStageCompleteMsg(msg.cmd_id, msg.key),
+            ModelStageCompleteMsg(msg.op_id, msg.key),
         )
 
 
 class TestNetThread(unittest.TestCase, _TestCaseThreadDataMixin, _TestCaseMockHfHubPatchMixin):
     KEY: ModelKey = ModelKey('foo', 'bar')
-    CMD_ID: int = 0
+    OP_ID: int = 0
 
     def setUp(self) -> None:
         logging.basicConfig()
@@ -1024,7 +1031,7 @@ class TestNetThread(unittest.TestCase, _TestCaseThreadDataMixin, _TestCaseMockHf
 
     def test_model_download_for_caching_cmd_when_no_files_cached(self):
         # Send command.
-        msg = ModelDownloadForCachingCmd(self.CMD_ID, self.KEY, None)
+        msg = ModelDownloadForCachingCmd(self.OP_ID, self.KEY, None)
         self.thread_data.main_msgq.send_msg(
             self.thread_data.net_msgq,
             MSG_NORMAL_PRIORITY,
@@ -1050,7 +1057,7 @@ class TestNetThread(unittest.TestCase, _TestCaseThreadDataMixin, _TestCaseMockHf
             path.parent.mkdir(exist_ok=True, parents=True)
             path.touch()
         # Send command.
-        msg = ModelDownloadForCachingCmd(self.CMD_ID, self.KEY, None)
+        msg = ModelDownloadForCachingCmd(self.OP_ID, self.KEY, None)
         self.thread_data.main_msgq.send_msg(
             self.thread_data.net_msgq,
             MSG_NORMAL_PRIORITY,
@@ -1085,7 +1092,7 @@ class TestNetThread(unittest.TestCase, _TestCaseThreadDataMixin, _TestCaseMockHf
             path.parent.mkdir(exist_ok=True, parents=True)
             path.touch()
         # Send command.
-        msg = ModelDownloadForCachingCmd(self.CMD_ID, self.KEY, None)
+        msg = ModelDownloadForCachingCmd(self.OP_ID, self.KEY, None)
         self.thread_data.main_msgq.send_msg(
             self.thread_data.net_msgq,
             MSG_NORMAL_PRIORITY,
@@ -1100,7 +1107,7 @@ class TestNetThread(unittest.TestCase, _TestCaseThreadDataMixin, _TestCaseMockHf
     def test_model_download_for_staging_cmd(self):
         filenames = _MOCK_FILENAMES[:len(_MOCK_FILENAMES)//2]
         # Send command.
-        msg = ModelDownloadForStagingCmd(self.CMD_ID, self.KEY, filenames)
+        msg = ModelDownloadForStagingCmd(self.OP_ID, self.KEY, filenames)
         self.thread_data.disk_msgq.send_msg(
             self.thread_data.net_msgq,
             MSG_NORMAL_PRIORITY,
@@ -1124,14 +1131,14 @@ class TestNetThread(unittest.TestCase, _TestCaseThreadDataMixin, _TestCaseMockHf
         self.thread_data.main_msgq.send_msg(
             self.thread_data.net_msgq,
             MSG_NORMAL_PRIORITY,
-            ModelDownloadForCachingCmd(self.CMD_ID+1, ModelKey('arg', 'bla'), []),
+            ModelDownloadForCachingCmd(self.OP_ID+1, ModelKey('arg', 'bla'), []),
         )
         _wait_for_empty(self.thread_data.net_msgq.queue)
 
 
 class TestDiskThread(unittest.TestCase, _TestCaseThreadDataMixin, _TestCaseMockHfHubPatchMixin):
     KEY: ModelKey = ModelKey('foo', 'bar')
-    CMD_ID: int = 0
+    OP_ID: int = 0
 
     def setUp(self) -> None:
         self.set_up_hf_hub_patchers()
@@ -1150,14 +1157,14 @@ class TestDiskThread(unittest.TestCase, _TestCaseThreadDataMixin, _TestCaseMockH
         self.thread_data.main_msgq.send_msg(
             self.thread_data.disk_msgq,
             MSG_NORMAL_PRIORITY,
-            ModelCacheToStageCmd(self.CMD_ID, self.KEY, None),
+            ModelCacheToStageCmd(self.OP_ID, self.KEY, None),
         )
         # Check net thread msgq for ModelDownloadForStagingCmd requesting all
         # files.
         msg = self.thread_data.net_msgq.get_msg().content
         self.assertIsInstance(msg, ModelDownloadForStagingCmd)
         self.assertEqual(
-            set(msg.files) if msg.files else None,
+            set(msg.filenames) if msg.filenames else None,
             set(
                 str(Path(self.KEY.revision or 'main', filename))
                 for filename in _MOCK_FILENAMES
@@ -1181,14 +1188,14 @@ class TestDiskThread(unittest.TestCase, _TestCaseThreadDataMixin, _TestCaseMockH
         self.thread_data.main_msgq.send_msg(
             self.thread_data.disk_msgq,
             MSG_NORMAL_PRIORITY,
-            ModelCacheToStageCmd(self.CMD_ID, self.KEY, None),
+            ModelCacheToStageCmd(self.OP_ID, self.KEY, None),
         )
         # Check net thread msgq for ModelDownloadStagingCmd requesting uncached
         # files.
         msg = self.thread_data.net_msgq.get_msg().content
         self.assertIsInstance(msg, ModelDownloadForStagingCmd)
         self.assertEqual(
-            set(msg.files) if msg.files else None,
+            set(msg.filenames) if msg.filenames else None,
             set(
                 str(Path(self.KEY.revision or 'main', filename))
                 for filename in uncached_files
@@ -1211,7 +1218,7 @@ class TestDiskThread(unittest.TestCase, _TestCaseThreadDataMixin, _TestCaseMockH
         self.thread_data.main_msgq.send_msg(
             self.thread_data.disk_msgq,
             MSG_NORMAL_PRIORITY,
-            ModelCacheToStageCmd(self.CMD_ID, self.KEY, None),
+            ModelCacheToStageCmd(self.OP_ID, self.KEY, None),
         )
         # Verify no message on net thread msgq.
         self.assertTrue(self.thread_data.net_msgq.queue.empty())
@@ -1232,7 +1239,7 @@ class TestDiskThread(unittest.TestCase, _TestCaseThreadDataMixin, _TestCaseMockH
         self.thread_data.net_msgq.send_msg(
             self.thread_data.disk_msgq,
             MSG_HIGH_PRIORITY,
-            ModelStageToCacheCmd(self.CMD_ID, self.KEY, None),
+            ModelStageToCacheCmd(self.OP_ID, self.KEY, None),
         )
         # Check main thread msgq for ModelCacheCompleteMsg.
         msg = self.thread_data.main_msgq.get_msg().content
@@ -1259,7 +1266,7 @@ class TestDiskThread(unittest.TestCase, _TestCaseThreadDataMixin, _TestCaseMockH
         self.thread_data.net_msgq.send_msg(
             self.thread_data.disk_msgq,
             MSG_HIGH_PRIORITY,
-            ModelStageToCacheCmd(self.CMD_ID, self.KEY, files),
+            ModelStageToCacheCmd(self.OP_ID, self.KEY, files),
         )
         # Check main thread msgq for ModelCacheCompleteMsg.
         msg = self.thread_data.main_msgq.get_msg().content
@@ -1285,7 +1292,7 @@ class TestDiskThread(unittest.TestCase, _TestCaseThreadDataMixin, _TestCaseMockH
         self.thread_data.net_msgq.send_msg(
             self.thread_data.disk_msgq,
             MSG_HIGH_PRIORITY,
-            ModelDownloadForStagingCompleteMsg(self.CMD_ID, self.KEY, files),
+            ModelDownloadForStagingCompleteMsg(self.OP_ID, self.KEY, files),
         )
         # Check main thread msgq for ModelStageCompleteMsg.
         msg = self.thread_data.main_msgq.get_msg().content
@@ -1303,6 +1310,6 @@ class TestDiskThread(unittest.TestCase, _TestCaseThreadDataMixin, _TestCaseMockH
         self.thread_data.main_msgq.send_msg(
             self.thread_data.disk_msgq,
             MSG_NORMAL_PRIORITY,
-            ModelCacheToStageCmd(self.CMD_ID+1, ModelKey('arg', 'bla'), None),
+            ModelCacheToStageCmd(self.OP_ID+1, ModelKey('arg', 'bla'), None),
         )
         _wait_for_empty(self.thread_data.disk_msgq.queue)

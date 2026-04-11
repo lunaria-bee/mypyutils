@@ -16,12 +16,13 @@ __all__ = (
     'MSG_HIGH_PRIORITY',
     'ModelCacheCmd',
     'ModelStageCmd',
+    'ModelUnstageCmd',
     'ModelRegisterForStageCompleteCmd',
     'ModelDownloadForCachingCmd',
     'ModelDownloadForStagingCmd',
     'ModelCacheToStageCmd',
     'ModelStageToCacheCmd',
-    'ModelUnstageCmd',
+    'ModelRmFromStageCmd',
     'ModelDownloadForStagingCompleteMsg',
     'ModelCacheCompleteMsg',
     'ModelStageCompleteMsg',
@@ -110,7 +111,7 @@ class ModelStageToCacheCmd:
     files for model identified by ``key`` from stage to cache.'''
     op_id: int
     key: ModelKey
-    filenames: Optional[Iterable[str]]
+    local_paths: Optional[Iterable[str]]
 
 @dataclass
 class ModelRmFromStageCmd:
@@ -118,7 +119,7 @@ class ModelRmFromStageCmd:
     identified by ``key`` from stage.'''
     op_id: int
     key: ModelKey
-    filenames: Optional[Iterable[str]]
+    local_paths: Optional[Iterable[str]]
 
 @dataclass
 class ModelCacheCompleteMsg:
@@ -150,6 +151,7 @@ class ThreadExitCmd: # TODO use
 type MainMsg = Union[
     ModelCacheCmd,
     ModelStageCmd,
+    ModelUnstageCmd,
     ModelRegisterForStageCompleteCmd,
     ModelCacheCompleteMsg,
     ModelStageCompleteMsg,
@@ -169,7 +171,7 @@ type DiskMsg = Union[
     ModelCacheToStageCmd,
     ModelStageToCacheCmd,
     ModelDownloadForStagingCompleteMsg,
-    ModelUnstageCmd,
+    ModelRmFromStageCmd,
 ]
 '''Messages that can be received by :class:`_DiskThread`.'''
 
