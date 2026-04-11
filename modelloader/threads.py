@@ -505,7 +505,7 @@ class TestCompletionTracker(unittest.TestCase):
         self.assertFalse(self.tracker.is_complete(ModelKey('b', None)))
 
 
-class _ThreadDataTestCaseMixin:
+class _TestCaseThreadDataMixin:
     def set_up_thread_data(self):
         self.cachedir_handle: tempfile.TemporaryDirectory = \
             tempfile.TemporaryDirectory(prefix="modelloader_test_cache_")
@@ -521,7 +521,7 @@ class _ThreadDataTestCaseMixin:
         self.stagedir_handle.cleanup()
 
 
-class TestMainThread(unittest.TestCase, _ThreadDataTestCaseMixin):
+class TestMainThread(unittest.TestCase, _TestCaseThreadDataMixin):
     KEY: ModelKey = ModelKey('EleutherAI/pythia-160m', None)
     CMD_ID: int = 0
 
@@ -811,7 +811,7 @@ def _mock_hfhub_hf_hub_download(
     return str(path)
 
 
-class _MockHfHubPatchMixin:
+class _TestCaseMockHfHubPatchMixin:
     def set_up_hf_hub_patchers(self):
         self.hfhub_snapshot_download_patcher = unittest.mock.patch(
             'huggingface_hub.snapshot_download',
@@ -829,7 +829,7 @@ class _MockHfHubPatchMixin:
         self.hfhub_hf_hub_download_patcher.stop()
 
 
-class TestNetThread(unittest.TestCase, _ThreadDataTestCaseMixin, _MockHfHubPatchMixin):
+class TestNetThread(unittest.TestCase, _TestCaseThreadDataMixin, _TestCaseMockHfHubPatchMixin):
     KEY: ModelKey = ModelKey('foo', 'bar')
     CMD_ID: int = 0
 
