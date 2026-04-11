@@ -942,24 +942,6 @@ class TestNetThread(unittest.TestCase, _TestCaseThreadDataMixin, _TestCaseMockHf
         self.assertEqual(hfhub.hf_hub_download.call_count, len(filenames))
 
 
-def _make_test_common_data() -> tuple[
-        tempfile.TemporaryDirectory,
-        tempfile.TemporaryDirectory,
-        ThreadData,
-]:
-    cachedir_handle = tempfile.TemporaryDirectory(
-        prefix="modelloader_test_cache_"
-    )
-    stagedir_handle = tempfile.TemporaryDirectory(
-        prefix="modelloader_test_stage_"
-    )
-    thread_data = ThreadData(
-        Path(cachedir_handle.name),
-        Path(stagedir_handle.name),
-    )
-    return cachedir_handle, stagedir_handle, thread_data
-
-
 def _wait_for_empty(queue: queue.Queue, wait_after_empty: int = 1) -> None:
     while not queue.empty(): pass
     time.sleep(wait_after_empty)
