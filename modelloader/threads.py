@@ -4,6 +4,8 @@ import logging
 from pathlib import Path
 import queue
 from queue import PriorityQueue
+import shutil
+import subprocess
 from threading import Event, Lock, Thread
 
 from messages import *
@@ -316,20 +318,13 @@ class NetThread(Thread):
 class DiskThread(Thread):
     '''TODO'''
 
-    def __init__(
-            self,
-            cachedir: PathOrStr,
-            stagedir: PathOrStr,
-            main_msgq: PriorityQueue[MainMsg],
-            net_msgq: PriorityQueue[NetMsg],
-            msgq: PriorityQueue[DiskMsg],
-    ):
+    def __init__(self, thread_data: ThreadData):
         super().__init__()
-        self.cachedir: Path = Path(cachedir)
-        self.stagedir: Path = Path(stagedir)
-        self.main_msgq: PriorityQueue[MainMsg] = main_msgq
-        self.net_msgq: PriorityQueue[NetMsg] = net_msgq
-        self.msgq: PriorityQueue[DiskMsg] = msgq
+        self.thread_data: ThreadData = thread_data
+        self.msgq: ModelLoaderMessager[DiskMsg] = thread_data.disk_msgq
+        '''Unlayered reference to local message manager, for legibility and
+        convenience.'''
+        self._exit: bool = False
 
     def run(self):
         msg_handler_map = {
@@ -338,14 +333,33 @@ class DiskThread(Thread):
             ModelDownloadForStagingCompleteMsg: self._handle_model_download_for_staging_complete_msg,
             ModelUnstageCmd: self._handle_model_unstage_cmd,
         }
-        while True:
-            msg: DiskMsg = self.msgq.get()
-            _log.debug(repr(msg))
-            msg_handler_map[type(msg)](msg)
+        while not self._exit:
+            try:
+                msg: DiskMsg = self.msgq.get_msg(timeout=MAX_BLOCK_SECS).content
+                msg_handler_map[type(msg)](msg)
+            except queue.Empty:
+                # We don't actually do anything here, the timeout is just to
+                # make sure self._exit gets rechecked.
+                pass
 
     def _handle_model_cache_to_stage_cmd(self, msg: ModelCacheToStageCmd):
-        '''TODO'''
-        subpath = _model_subpath(msg.key)
+        '''Handle :class:`ModelCacheToStageCmd`.
+
+        First, check the cache for any missing or dirty files that need to be
+        downloaded.
+
+        If any files need to be downloaded, send
+        :class:`ModelDownloadForStagingCmd` to :class:`NetThread` with the
+        :attr:`ModelDownloadForStagingCmd.files` field set accordingly. Then,
+        stage any files that are already cached. :class:`DiskThread` will
+        complete the staging process upon receiving
+        :class:`ModelDownloadForStagingCompleteMsg` from :class:`NetThread`.
+
+        If no files need to be downloaded, stage all files and then send
+        :class:`ModelStageCompleteMsg` to :class:`MainThread`.
+
+        '''
+        subpath = msg.key.model_subpath()
         # TODO Handle msg.files?
 
         # TODO Check for missing/dirty files in cache.
@@ -355,7 +369,7 @@ class DiskThread(Thread):
                 repo_id=msg.key.hf_path,
                 repo_type='model',
                 revision=msg.key.revision,
-                cache_dir=self.cachedir / subpath,
+                cache_dir=self.thread_data.cachedir / subpath,
                 dry_run=True,
         ):
             if f.will_download:
@@ -366,12 +380,10 @@ class DiskThread(Thread):
         if files_to_dl:
             # Tell net thread to download missing/dirty files and report back
             # with ModelDownloadForStagingCompleteMsg when it is done.
-            self.net_msgq.put(
-                ModelDownloadForStagingCmd(
-                    MSG_HIGH_PRIORITY,
-                    msg.key,
-                    files_to_dl,
-                )
+            self.msgq.send_msg(
+                self.thread_data.net_msgq,
+                MSG_HIGH_PRIORITY,
+                ModelDownloadForStagingCmd(msg.cmd_id, msg.key, files_to_dl)
             )
 
         if files_to_stage:
@@ -382,10 +394,10 @@ class DiskThread(Thread):
                 '-R', # copy path names relative to '/./' in source path
                 '-v', # print info
             ] + [
-                f'{self.cachedir}/./{subpath}/{filename}'
+                f'{self.thread_data.cachedir}/./{subpath}/{filename}'
                 for filename in files_to_stage
             ] + [
-                f'{self.stagedir}/{subpath}/',
+                f'{self.thread_data.stagedir}/{subpath}/',
             ]
             rsync_result = subprocess.run(
                 rsync_cmd,
@@ -397,14 +409,21 @@ class DiskThread(Thread):
         if not files_to_dl:
             # Files have been copied to stage and none need to be downloaded, so
             # report ModelStageCompleteMsg back to main thread.
-            self.main_msgq.put(ModelStageCompleteMsg(
+            self.msgq.send_msg(
+                self.thread_data.main_msgq,
                 MSG_HIGH_PRIORITY,
-                msg.key,
-            ))
+                ModelStageCompleteMsg(msg.cmd_id, msg.key),
+            )
 
     def _handle_model_stage_to_cache_cmd(self, msg: ModelStageToCacheCmd):
-        '''TODO'''
-        subpath = _model_subpath(msg.key)
+        '''Handle :class:`ModelStageToCacheCmd`.
+
+        Copy all files for :attr:`msg.key <ModelStageToCacheCmd.key>` from stage
+        to cache and then send :class:`ModelCacheCompleteMsg` to
+        :class:`MainThread`.
+
+        '''
+        subpath = msg.key.model_subpath()
 
         rsync_cmd = [
             'rsync',
@@ -414,12 +433,12 @@ class DiskThread(Thread):
         if msg.files:
             rsync_cmd.append('-R')
             rsync_cmd += [
-                f'{self.stagedir}/./{subpath}/{filename}'
+                f'{self.thread_data.stagedir}/./{subpath}/{filename}'
                 for filename in msg.files
             ]
         else:
-            rsync_cmd.append(f'{self.stagedir}/{subpath}/')
-        rsync_cmd.append(f'{self.cachedir}/{subpath}/')
+            rsync_cmd.append(f'{self.thread_data.stagedir}/{subpath}/')
+        rsync_cmd.append(f'{self.thread_data.cachedir}/{subpath}/')
 
         rsync_result = subprocess.run(
             rsync_cmd,
@@ -428,31 +447,75 @@ class DiskThread(Thread):
         )
         _log.debug(f"rsync output:\n{rsync_result.stdout.decode('utf8')}")
 
-        self.main_msgq.put(
-            ModelCacheCompleteMsg(
-                MSG_HIGH_PRIORITY,
-                msg.key,
-            ))
-
-    def _handle_model_download_for_staging_complete_msg(self, msg: ModelDownloadForCachingCmd):
-        '''TODO'''
-        self.main_msgq.put(
-            ModelStageCompleteMsg(
-                MSG_HIGH_PRIORITY,
-                msg.key,
-            )
+        self.msgq.send_msg(
+            self.thread_data.main_msgq,
+            MSG_HIGH_PRIORITY,
+            ModelCacheCompleteMsg(msg.cmd_id, msg.key),
         )
-        self.msgq.put(
-            ModelStageToCacheCmd(
-                MSG_HIGH_PRIORITY,
-                msg.key,
-                msg.files,
-            )
+
+    def _handle_model_download_for_staging_complete_msg(
+            self,
+            msg: ModelDownloadForStagingCompleteMsg,
+    ):
+        '''Handle :class:`ModelDownloadForCachingCmd`.
+
+        If :class:`DiskThread` is processing this message, it means that the
+        following has happened:
+
+        1. :class:`MainThread` sent :class:`ModelCacheToStageCmd` to :class:`DiskThread`.
+
+        2. :class:`DiskThread` determined that some or all of the files for the
+           model requested in the :class:`ModelCacheToStageCmd` were missing or
+           dirty and needed to be downloaded.
+
+        3. :class:`DiskThread` sent :class:`ModelDownloadForStagingCmd` to
+           :class:`NetThread` with the :attr:`files
+           <ModelDownloadForStagingCmd>` field set to the missing/dirty files.
+
+        4. :class:`DiskThread` staged all cached files that did not need
+           downloading, ensuring those files are in the cache.
+
+        5. :class:`NetThread`, upon receiving
+           :class:`ModelDownloadForStagingCmd` from :class:`DiskThread`,
+           downloaded all requested files, ensuring those files are in the
+           cache.
+
+        6. :class:`NetThread` sent :class:`ModelDownloadForStagingCompleteMsg`
+           to :class:`DiskThread`.
+
+        Because of this, receiving this message means that both
+        :class:`DiskThread` and :class:`NetThread` have completed their share of
+        the staging operation, and all model files are now staged. Therefore, do
+        the following:
+
+        1. Send :class:`ModelStageCompleteMsg` to :class:`MainThread`.
+
+        2. Send :class:`ModelStageToCacheCmd` to :class:`DiskThread` (self), so
+           that files downloaded by :class:`NetThread` in the
+           :class:`ModelDownloadForStagingCmd` are cached for future use.
+
+        '''
+        self.msgq.send_msg(
+            self.thread_data.main_msgq,
+            MSG_HIGH_PRIORITY,
+            ModelStageCompleteMsg(msg.cmd_id, msg.key),
+        )
+        self.msgq.send_msg(
+            self.msgq,
+            MSG_HIGH_PRIORITY,
+            ModelStageToCacheCmd(msg.cmd_id, msg.key, msg.files),
         )
 
     def _handle_model_unstage_cmd(self, msg: ModelUnstageCmd):
-        '''TODO'''
-        model_stage_path = self.stagedir / _model_subpath(msg.key)
+        '''Handle :class:`ModelUnstageCmd`.
+
+        Remove requested :ref:`files <ModelUnstageCmd.files>`, or, if
+        :attr:`msg.files <ModelUnstageCmd.files>` is ``None``, remove entire
+        staging directory for requested model. Then, send
+        :class:`ModelUnstageCompleteMsg` to :class:`MainThread`.
+
+        '''
+        model_stage_path = self.thread_data.stagedir / msg.key.model_subpath()
         if msg.files:
             for filename in msg.files:
                 path = Path(
@@ -468,11 +531,11 @@ class DiskThread(Thread):
         else:
             shutil.rmtree(model_stage_path)
 
-        self.main_msgq.put(
-            ModelUnstageCompleteMsg(
-                MSG_HIGH_PRIORITY,
-                msg.key,
-            ))
+        self.msgq.send_msg(
+            self.thread_data.main_msgq,
+            MSG_HIGH_PRIORITY,
+            ModelUnstageCompleteMsg(msg.cmd_id, msg.key, msg.files),
+        )
 
 
 import unittest, unittest.mock
@@ -940,6 +1003,172 @@ class TestNetThread(unittest.TestCase, _TestCaseThreadDataMixin, _TestCaseMockHf
         ))
         # Check that hf_hub_download called expected number of times.
         self.assertEqual(hfhub.hf_hub_download.call_count, len(filenames))
+
+
+class TestDiskThread(unittest.TestCase, _TestCaseThreadDataMixin, _TestCaseMockHfHubPatchMixin):
+    KEY: ModelKey = ModelKey('foo', 'bar')
+    CMD_ID: int = 0
+
+    def setUp(self) -> None:
+        self.set_up_hf_hub_patchers()
+        self.set_up_thread_data()
+        self.disk_thread = DiskThread(self.thread_data)
+        self.disk_thread.start()
+
+    def tearDown(self) -> None:
+        self.disk_thread._exit = True
+        self.disk_thread.join()
+        self.tear_down_thread_data()
+        self.tear_down_hf_hub_patchers()
+
+    def test_model_cache_to_stage_cmd_when_no_files_cached(self):
+        # Send command.
+        self.thread_data.main_msgq.send_msg(
+            self.thread_data.disk_msgq,
+            MSG_NORMAL_PRIORITY,
+            ModelCacheToStageCmd(self.CMD_ID, self.KEY, None),
+        )
+        # Check net thread msgq for ModelDownloadForStagingCmd requesting all
+        # files.
+        msg = self.thread_data.net_msgq.get_msg().content
+        self.assertIsInstance(msg, ModelDownloadForStagingCmd)
+        self.assertEqual(
+            set(msg.files) if msg.files else None,
+            set(_MOCK_FILENAMES),
+        )
+        # Verify that stagedir is empty.
+        self.assertEqual(
+            len(list(self.thread_data.stagedir.iterdir())),
+            0,
+        )
+
+    def test_model_cache_to_stage_cmd_when_some_files_cached(self):
+        cached_files = _MOCK_FILENAMES[:len(_MOCK_FILENAMES)//2]
+        uncached_files = _MOCK_FILENAMES[len(_MOCK_FILENAMES)//2:]
+        # "Cache" files.
+        for filename in cached_files:
+            path = _full_path(self.thread_data.cachedir, self.KEY, filename)
+            path.parent.mkdir(exist_ok=True, parents=True)
+            path.touch()
+        # Send command.
+        self.thread_data.main_msgq.send_msg(
+            self.thread_data.disk_msgq,
+            MSG_NORMAL_PRIORITY,
+            ModelCacheToStageCmd(self.CMD_ID, self.KEY, None),
+        )
+        # Check net thread msgq for ModelDownloadStagingCmd requesting uncached
+        # files.
+        msg = self.thread_data.net_msgq.get_msg().content
+        self.assertIsInstance(msg, ModelDownloadForStagingCmd)
+        self.assertEqual(
+            set(msg.files) if msg.files else None,
+            set(uncached_files),
+        )
+        # Push dummy message to disk thread and then wait for queue to empty, to
+        # ensure rsync operations triggered by initial message are complete.
+        self.thread_data.main_msgq.send_msg(
+            self.thread_data.disk_msgq,
+            MSG_NORMAL_PRIORITY,
+            ModelCacheToStageCmd(self.CMD_ID+1, ModelKey('argle', 'blargle'), None),
+        )
+        _wait_for_empty(self.thread_data.disk_msgq.queue)
+        # Verify that stagedir contains cached files.
+        self.assertTrue(all(
+            _full_path(self.thread_data.stagedir, self.KEY, filename).is_file()
+            for filename in cached_files
+        ))
+
+    def test_model_cache_to_stage_cmd_when_all_files_cached(self):
+        # "Cache" files.
+        for filename in _MOCK_FILENAMES:
+            path = _full_path(self.thread_data.cachedir, self.KEY, filename)
+            path.parent.mkdir(exist_ok=True, parents=True)
+            path.touch()
+        # Send command.
+        self.thread_data.main_msgq.send_msg(
+            self.thread_data.disk_msgq,
+            MSG_NORMAL_PRIORITY,
+            ModelCacheToStageCmd(self.CMD_ID, self.KEY, None),
+        )
+        # Verify no message on net thread msgq.
+        self.assertTrue(self.thread_data.net_msgq.queue.empty())
+        # Verify that stagedir contains cached files.
+        self.assertTrue(all(
+            _full_path(self.thread_data.stagedir, self.KEY, filename).is_file()
+            for filename in _MOCK_FILENAMES
+        ))
+
+    def test_model_stage_to_cache_cmd_with_unset_files_field(self):
+        # Populate stagedir with expected files.
+        for filename in _MOCK_FILENAMES:
+            path = _full_path(self.thread_data.stagedir, self.KEY, filename)
+            path.parent.mkdir(exist_ok=True, parents=True)
+            path.touch()
+        # Send command.
+        self.thread_data.net_msgq.send_msg(
+            self.thread_data.disk_msgq,
+            MSG_HIGH_PRIORITY,
+            ModelStageToCacheCmd(self.CMD_ID, self.KEY, None),
+        )
+        # Check main thread msgq for ModelCacheCompleteMsg.
+        msg = self.thread_data.main_msgq.get_msg().content
+        self.assertIsInstance(msg, ModelCacheCompleteMsg)
+        # Verify that cachedir contains expected files.
+        self.assertTrue(all(
+            _full_path(self.thread_data.stagedir, self.KEY, filename).is_file()
+            for filename in _MOCK_FILENAMES
+        ))
+
+    def test_model_stage_to_cache_cmd_with_set_files_field(self):
+        filenames = _MOCK_FILENAMES[:len(_MOCK_FILENAMES)//2]
+        # Populate stagedir with expected files.
+        for filename in filenames:
+            path = _full_path(self.thread_data.stagedir, self.KEY, filename)
+            path.parent.mkdir(exist_ok=True, parents=True)
+            path.touch()
+        # Send command.
+        self.thread_data.net_msgq.send_msg(
+            self.thread_data.disk_msgq,
+            MSG_HIGH_PRIORITY,
+            ModelStageToCacheCmd(self.CMD_ID, self.KEY, filenames),
+        )
+        # Check main thread msgq for ModelCacheCompleteMsg.
+        msg = self.thread_data.main_msgq.get_msg().content
+        self.assertIsInstance(msg, ModelCacheCompleteMsg)
+        # Verify that cachedir contains expected files.
+        self.assertTrue(all(
+            _full_path(self.thread_data.stagedir, self.KEY, filename).is_file()
+            for filename in filenames
+        ))
+
+    def test_model_download_for_staging_complete_msg(self):
+        # Populate stagedir with expected files.
+        for filename in _MOCK_FILENAMES:
+            path = _full_path(self.thread_data.stagedir, self.KEY, filename)
+            path.parent.mkdir(exist_ok=True, parents=True)
+            path.touch()
+        # Send message.
+        self.thread_data.net_msgq.send_msg(
+            self.thread_data.disk_msgq,
+            MSG_HIGH_PRIORITY,
+            ModelDownloadForStagingCompleteMsg(self.CMD_ID, self.KEY, _MOCK_FILENAMES),
+        )
+        # Check main thread msgq for ModelStageCompleteMsg.
+        msg = self.thread_data.main_msgq.get_msg().content
+        self.assertIsInstance(msg, ModelStageCompleteMsg)
+        # Push dummy message to disk thread and then wait for queue to empty, to
+        # ensure rsync operations are complete.
+        self.thread_data.main_msgq.send_msg(
+            self.thread_data.disk_msgq,
+            MSG_NORMAL_PRIORITY,
+            ModelCacheToStageCmd(self.CMD_ID+1, ModelKey('argle', 'blargle'), None),
+        )
+        _wait_for_empty(self.thread_data.disk_msgq.queue)
+        # Verify that cachedir contains expected files.
+        self.assertTrue(all(
+            _full_path(self.thread_data.cachedir, self.KEY, filename).is_file()
+            for filename in _MOCK_FILENAMES
+        ))
 
 
 def _wait_for_empty(queue: queue.Queue, wait_after_empty: int = 1) -> None:
