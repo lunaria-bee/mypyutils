@@ -113,6 +113,8 @@ class MainThread(Thread):
                 msg: MainMsg = self.msgq.get_msg(timeout=MAX_BLOCK_SECS).content
                 msg_handler_map[type(msg)](msg)
             except queue.Empty:
+                # We don't actually do anything here, the timeout is just to
+                # make sure self._exit gets rechecked.
                 pass
 
     def _handle_model_cache_cmd(self, msg: ModelCacheCmd) -> None:
@@ -241,6 +243,8 @@ class NetThread(Thread):
                 msg: NetMsg = self.msgq.get_msg(timeout=MAX_BLOCK_SECS).content
                 msg_handler_map[type(msg)](msg)
             except queue.Empty:
+                # We don't actually do anything here, the timeout is just to
+                # make sure self._exit gets rechecked.
                 pass
 
     def _handle_model_download_for_caching_cmd(self, msg) -> None:
