@@ -544,6 +544,115 @@ import tempfile
 import time
 
 
+_MOCK_FILENAMES: collections.abc.Sequence[str] = ('a', 'b', 'c', 'd', 'e')
+
+
+class _TestCaseThreadDataMixin:
+    def set_up_thread_data(self):
+        self.cachedir_handle: tempfile.TemporaryDirectory = \
+            tempfile.TemporaryDirectory(prefix="modelloader_test_cache_")
+        self.stagedir_handle: tempfile.TemporaryDirectory = \
+            tempfile.TemporaryDirectory(prefix="modelloader_test_stage_")
+        self.thread_data: ThreadData = ThreadData(
+            Path(self.cachedir_handle.name),
+            Path(self.stagedir_handle.name),
+        )
+
+    def tear_down_thread_data(self):
+        self.cachedir_handle.cleanup()
+        self.stagedir_handle.cleanup()
+
+
+class _TestCaseMockHfHubPatchMixin:
+    def set_up_hf_hub_patchers(self):
+        self.hfhub_snapshot_download_patcher = unittest.mock.patch(
+            'huggingface_hub.snapshot_download',
+            side_effect=self._mock_hfhub_snapshot_download,
+        )
+        self.hfhub_hf_hub_download_patcher = unittest.mock.patch(
+            'huggingface_hub.hf_hub_download',
+            side_effect=self._mock_hfhub_hf_hub_download,
+        )
+        self.hfhub_snapshot_download_patcher.start()
+        self.hfhub_hf_hub_download_patcher.start()
+
+    def tear_down_hf_hub_patchers(self):
+        self.hfhub_snapshot_download_patcher.stop()
+        self.hfhub_hf_hub_download_patcher.stop()
+
+    @staticmethod
+    def _mock_hfhub_snapshot_download(
+            repo_id: str,
+            *,
+            revision: str | None = None,
+            cache_dir: str | Path | None = None,
+            dry_run: bool = False,
+            **_,
+    ) -> list[hfhub.DryRunFileInfo]:
+        if revision is None:
+            revision = 'main'
+
+        if cache_dir is None:
+            raise ValueError("Expected cache_dir to be specified")
+        else:
+            cache_dir = Path(cache_dir)
+
+        if not dry_run:
+            raise ValueError("Expected dry_run to be True")
+
+        return [
+            hfhub.DryRunFileInfo(
+                commit_hash=revision,
+                file_size=0,
+                filename=filename,
+                local_path=str(cache_dir / repo_id / revision / filename),
+                is_cached=(cache_dir / repo_id / revision / filename).is_file(),
+                will_download=not (cache_dir / repo_id / revision / filename).is_file(),
+            ) for filename in _MOCK_FILENAMES
+        ]
+
+    @staticmethod
+    def _mock_hfhub_hf_hub_download(
+            repo_id: str,
+            filename: str,
+            *,
+            revision: str | None = None,
+            cache_dir: str | Path | None = None,
+            **_,
+    ) -> str:
+        if revision is None:
+            revision = 'main'
+
+        if cache_dir is None:
+            raise ValueError("Expected cache_dir to be specified")
+        else:
+            cache_dir = Path(cache_dir)
+
+        path = cache_dir / repo_id / revision / filename
+        path.parent.mkdir(exist_ok=True, parents=True)
+        path.touch()
+        return str(path)
+
+
+def _wait_for_empty(queue: queue.Queue, wait_after_empty: int = 1) -> None:
+    while not queue.empty(): pass
+    time.sleep(wait_after_empty)
+
+
+def _full_path(
+        basedir: Path,
+        key: ModelKey,
+        filename: str | Path,
+) -> Path:
+    return (
+        basedir
+        / key.model_subpath()
+        / key.hf_path
+        / (key.revision or 'main')
+        / filename
+    )
+
+
 class TestCompletionTracker(unittest.TestCase):
     def setUp(self):
         self.tracker: CompletionTracker = CompletionTracker()
@@ -565,22 +674,6 @@ class TestCompletionTracker(unittest.TestCase):
     def test_mark_complete_does_not_flag_other_keys_as_complete(self):
         self.tracker.mark_complete(ModelKey('a', None))
         self.assertFalse(self.tracker.is_complete(ModelKey('b', None)))
-
-
-class _TestCaseThreadDataMixin:
-    def set_up_thread_data(self):
-        self.cachedir_handle: tempfile.TemporaryDirectory = \
-            tempfile.TemporaryDirectory(prefix="modelloader_test_cache_")
-        self.stagedir_handle: tempfile.TemporaryDirectory = \
-            tempfile.TemporaryDirectory(prefix="modelloader_test_stage_")
-        self.thread_data: ThreadData = ThreadData(
-            Path(self.cachedir_handle.name),
-            Path(self.stagedir_handle.name),
-        )
-
-    def tear_down_thread_data(self):
-        self.cachedir_handle.cleanup()
-        self.stagedir_handle.cleanup()
 
 
 class TestMainThread(unittest.TestCase, _TestCaseThreadDataMixin):
@@ -815,80 +908,6 @@ class TestMainThread(unittest.TestCase, _TestCaseThreadDataMixin):
             MSG_HIGH_PRIORITY,
             ModelStageCompleteMsg(msg.cmd_id, msg.key),
         )
-
-
-_MOCK_FILENAMES: collections.abc.Sequence[str] = ('a', 'b', 'c', 'd', 'e')
-
-
-def _mock_hfhub_snapshot_download(
-        repo_id: str,
-        *,
-        revision: str | None = None,
-        cache_dir: str | Path | None = None,
-        dry_run: bool = False,
-        **_,
-) -> list[hfhub.DryRunFileInfo]:
-    if revision is None:
-        revision = 'main'
-
-    if cache_dir is None:
-        raise ValueError("Expected cache_dir to be specified")
-    else:
-        cache_dir = Path(cache_dir)
-
-    if not dry_run:
-        raise ValueError("Expected dry_run to be True")
-
-    return [
-        hfhub.DryRunFileInfo(
-            commit_hash=revision,
-            file_size=0,
-            filename=filename,
-            local_path=str(cache_dir / repo_id / revision / filename),
-            is_cached=(cache_dir / repo_id / revision / filename).is_file(),
-            will_download=not (cache_dir / repo_id / revision / filename).is_file(),
-        ) for filename in _MOCK_FILENAMES
-    ]
-
-
-def _mock_hfhub_hf_hub_download(
-        repo_id: str,
-        filename: str,
-        *,
-        revision: str | None = None,
-        cache_dir: str | Path | None = None,
-        **_,
-) -> str:
-    if revision is None:
-        revision = 'main'
-
-    if cache_dir is None:
-        raise ValueError("Expected cache_dir to be specified")
-    else:
-        cache_dir = Path(cache_dir)
-
-    path = cache_dir / repo_id / revision / filename
-    path.parent.mkdir(exist_ok=True, parents=True)
-    path.touch()
-    return str(path)
-
-
-class _TestCaseMockHfHubPatchMixin:
-    def set_up_hf_hub_patchers(self):
-        self.hfhub_snapshot_download_patcher = unittest.mock.patch(
-            'huggingface_hub.snapshot_download',
-            side_effect=_mock_hfhub_snapshot_download,
-        )
-        self.hfhub_hf_hub_download_patcher = unittest.mock.patch(
-            'huggingface_hub.hf_hub_download',
-            side_effect=_mock_hfhub_hf_hub_download,
-        )
-        self.hfhub_snapshot_download_patcher.start()
-        self.hfhub_hf_hub_download_patcher.start()
-
-    def tear_down_hf_hub_patchers(self):
-        self.hfhub_snapshot_download_patcher.stop()
-        self.hfhub_hf_hub_download_patcher.stop()
 
 
 class TestNetThread(unittest.TestCase, _TestCaseThreadDataMixin, _TestCaseMockHfHubPatchMixin):
@@ -1168,22 +1187,3 @@ class TestDiskThread(unittest.TestCase, _TestCaseThreadDataMixin, _TestCaseMockH
             _full_path(self.thread_data.cachedir, self.KEY, filename).is_file()
             for filename in _MOCK_FILENAMES
         ))
-
-
-def _wait_for_empty(queue: queue.Queue, wait_after_empty: int = 1) -> None:
-    while not queue.empty(): pass
-    time.sleep(wait_after_empty)
-
-
-def _full_path(
-        basedir: Path,
-        key: ModelKey,
-        filename: str | Path,
-) -> Path:
-    return (
-        basedir
-        / key.model_subpath()
-        / key.hf_path
-        / (key.revision or 'main')
-        / filename
-    )
