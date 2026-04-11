@@ -8,7 +8,6 @@ from threading import current_thread, Event, Lock
 from typing import NamedTuple, Union
 
 from modelkey import KeyLike, ModelKey
-from util import PathOrStr
 
 
 __all__ = (
