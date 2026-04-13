@@ -571,7 +571,7 @@ class DiskThread(Thread):
             ModelUnstageCompleteMsg(msg.op_id, msg.key),
         )
 
-    class _RsyncDir(enum.Enum):
+    class _RsyncDirection(enum.Enum):
         CACHE_TO_STAGE = enum.auto()
         STAGE_TO_CACHE = enum.auto()
 
@@ -579,30 +579,38 @@ class DiskThread(Thread):
             self,
             key: ModelKey,
             local_paths: Iterable[str],
-            direction: _RsyncDir,
+            direction: _RsyncDirection,
     ) -> subprocess.CompletedProcess:
         # TODO Copy blob and symlink, inserting '/./' into the appropriate
         # section of the path to ensure correct relative copy.
-        model_repo_folder_name: str = hfhub.file_download.repo_folder_name(
-            repo_id=key.hf_path,
-            repo_type='model',
-        )
-        cache_storage: str = str(Path(
-            self.thread_data.cachedir,
-            model_repo_folder_name,
-        ))
-        stage_storage: str = str(Path(
-            self.thread_data.stagedir,
-            model_repo_folder_name,
-        ))
 
-        match direction:
+        match dir:
             case self._RsyncDir.CACHE_TO_STAGE:
-                source = cache_storage
-                dest = stage_storage
+                source = self.thread_data.cachedir
+                dest = self.thread_data.stagedir
             case self._RsyncDir.STAGE_TO_CACHE:
-                source = stage_storage
-                dest = cache_storage
+                source = self.thread_data.stagedir
+                dest = self.thread_data.cachedir
+
+        # Build a list of paths to copy, symlinks, targets, and intermediary links.
+        paths_to_process: list[Path] = [Path(p) for p in local_paths]
+        paths_to_copy: list[str] = []
+        while len(paths_to_process):
+            path = paths_to_process.pop()
+
+            # Insert '/./' between source base dir and rest of path, to ensure
+            # correct relative copying.
+
+            # Resolve symlinks until reaching target.
+            if path.is_symlink():
+                paths_to_process.append(path.readlink())
+
+        # Build rsync command.
+        rsync_cmd = [
+            'rsync',
+            '-l', # copy symlinks as symlinks
+            '-R', # copy path names relative to '/./' in source path
+        ]
 
         rsync_cmd = [
             'rsync',
@@ -632,9 +640,7 @@ import collections.abc
 import queue
 import tempfile
 import time
-
-
-_MOCK_FILENAMES: collections.abc.Sequence[str] = ('a', 'b', 'c', 'd', 'e')
+import typing
 
 
 class _TestCaseThreadDataMixin:
@@ -655,6 +661,8 @@ class _TestCaseThreadDataMixin:
 
 class _TestCaseMockHfHubPatchMixin:
     # TODO Bring more in line with HF behavior.
+    # TODO Nested paths to test relative paths correctness.
+    # TODO Symlinks (including intermediary links) to test link correctness.
     def set_up_hf_hub_patchers(self):
         self.hfhub_snapshot_download_patcher = unittest.mock.patch(
             'huggingface_hub.snapshot_download',
