@@ -752,7 +752,7 @@ class _TestCaseMockHfHubPatchMixin:
         if revision is None:
             revision = hfhub.constants.DEFAULT_REVISION
 
-        if repo_type is not 'model':
+        if repo_type != 'model':
             raise ValueError(
                 f"Expected repo_type to be 'model', not {repr(repo_type)}"
             )
@@ -810,6 +810,11 @@ class _TestCaseMockHfHubPatchMixin:
     ) -> str:
         if revision is None:
             revision = hfhub.constants.DEFAULT_REVISION
+
+        if repo_type != 'model':
+            raise ValueError(
+                f"Expected repo_type to be 'model', not {repr(repo_type)}"
+            )
 
         if cache_dir is None:
             raise ValueError("Expected cache_dir to be specified")
