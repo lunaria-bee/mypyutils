@@ -1287,9 +1287,9 @@ class TestNetThread(unittest.TestCase, _TestCaseThreadDataMixin, _TestCaseMockHf
 
     def test_model_download_for_staging_cmd(self):
         num_filenames: int = len(self.MOCK_FILENAMES)
-        dl_filenames: collections.abc.Iterable[str] = \
+        dl_filenames: collections.abc.Sequence[str] = \
             self.MOCK_FILENAMES[:num_filenames//2]
-        no_dl_filenames: collections.abc.Iterable[str] = \
+        no_dl_filenames: collections.abc.Sequence[str] = \
             self.MOCK_FILENAMES[num_filenames//2:]
         # Send command.
         msg = ModelDownloadForStagingCmd(self.OP_ID, self.KEY, dl_filenames)
