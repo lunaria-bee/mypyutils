@@ -1,3 +1,4 @@
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 import enum
 import huggingface_hub as hfhub
@@ -6,7 +7,6 @@ from pathlib import Path
 import queue
 import subprocess
 from threading import Event, Lock, Thread
-from typing import Iterable
 
 from messages import *
 from modelkey import KeyLike, ModelKey
