@@ -77,38 +77,6 @@ class ThreadData:
         field(default_factory=lambda: ModelLoaderMessager("disk"))
 
 
-# TODO (MAIN PRIORITY) `DryRunFileInfo.filename` doesn't have adequate
-# information to determine the actual path (incorporating revision info) that
-# will be used for file storage. I will likely need to use
-# `hfhub.file_download._get_pointer_path` to determine that. For different
-# revisions, investigate, understand, and (where applicable) accurately mock the
-# following:
-# -- hfhub.snapshot_download()
-# -- hfhub.hf_hub_download()
-# -- hfhub.file_download._get_pointer_path()
-#
-# In a DryRunFileInfo object:
-# -- `filename` is the name of the file in the git repo
-# -- `local_path` is the path to the symlink to the blob of the actual file.
-# -- `pointer_path` is *theoretically* the symlink path, but it's
-#    unreliable. When files are actually downloaded, HF puts the symlinks in a
-#    folder named after the revision commit hash, but when `dry_run=True`,
-#    `pointer_path` will just use whatever the caller passed in as the
-#    `revision` argument, usually the revision name.
-#
-# The commit hash corresponding to a revision name is stored in a file in
-# 'refs', but the HF code treats this as potentially stale/unreliable. We're
-# already getting commit hash info when doing dry runs to check for
-# missing/dirty files, so I think the move is to pass commit hashes /
-# `local_path` values in appropriate messages.
-#
-# So, the approach:
-# -- When downloading, just request downloads by repo, revision, and filename,
-#    like I'm already doing. hf_hub_download automatically handles the blobs and
-#    symlinking and such.
-# -- When copying, get the symlink path from `local_path`, follow it to the
-#    actual blob, and copy both.
-
 # TODO Use `hfhub.constants.DEFAULT_REVISION` instead of hardcoding `main`.
 
 # TODO Clean up:
