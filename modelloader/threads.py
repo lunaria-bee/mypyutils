@@ -421,7 +421,7 @@ class DiskThread(Thread):
         if local_paths_for_stage:
             # Stage files that are already cached.
             _log.debug(f"staging {local_paths_for_stage}")
-            self._rsync(msg.key, local_paths_for_stage, self._RsyncDir.CACHE_TO_STAGE)
+            self._rsync(local_paths_for_stage, self._RsyncDirection.CACHE_TO_STAGE)
 
         if not filenames_for_dl:
             # Files have been copied to stage and none need to be downloaded, so
@@ -450,14 +450,14 @@ class DiskThread(Thread):
                     repo_id=msg.key.hf_path,
                     repo_type='model',
                     revision=msg.key.revision,
-                    cache_dir=self.thread_data.cachedir,
+                    cache_dir=self.thread_data.stagedir,
                     dry_run=True,
                 )
             )
 
         _log.debug(f"caching {local_paths}")
 
-        self._rsync(msg.key, local_paths, self._RsyncDir.STAGE_TO_CACHE)
+        self._rsync(local_paths, self._RsyncDirection.STAGE_TO_CACHE)
 
         self.msgq.send_msg(
             self.thread_data.main_msgq,
@@ -577,20 +577,18 @@ class DiskThread(Thread):
 
     def _rsync(
             self,
-            key: ModelKey,
             local_paths: Iterable[str],
             direction: _RsyncDirection,
     ) -> subprocess.CompletedProcess:
         # TODO Copy blob and symlink, inserting '/./' into the appropriate
         # section of the path to ensure correct relative copy.
-
-        match dir:
-            case self._RsyncDir.CACHE_TO_STAGE:
-                source = self.thread_data.cachedir
-                dest = self.thread_data.stagedir
-            case self._RsyncDir.STAGE_TO_CACHE:
-                source = self.thread_data.stagedir
-                dest = self.thread_data.cachedir
+        match direction:
+            case self._RsyncDirection.CACHE_TO_STAGE:
+                source: Path = self.thread_data.cachedir
+                dest: Path = self.thread_data.stagedir
+            case self._RsyncDirection.STAGE_TO_CACHE:
+                source: Path = self.thread_data.stagedir
+                dest: Path = self.thread_data.cachedir
 
         # Build a list of paths to copy, symlinks, targets, and intermediary links.
         paths_to_process: list[Path] = [Path(p) for p in local_paths]
@@ -600,6 +598,7 @@ class DiskThread(Thread):
 
             # Insert '/./' between source base dir and rest of path, to ensure
             # correct relative copying.
+            paths_to_copy.append(f'{source}/./{path.relative_to(source)}')
 
             # Resolve symlinks until reaching target.
             if path.is_symlink():
@@ -617,10 +616,7 @@ class DiskThread(Thread):
             '-l', # copy symlinks as symlinks (YF uses symlinks to map model parts to blobs)
             '-v', # print info
             '-R', # copy path names relative to '/./' in source path
-        ] + [
-            f'{source}/./{filename}'
-            for filename in filenames
-        ] + [
+        ] + paths_to_copy + [
             f'{dest}/'
         ]
         _log.debug(f"rsync command: {repr(rsync_cmd)}")
