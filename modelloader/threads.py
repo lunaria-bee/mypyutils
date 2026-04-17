@@ -913,19 +913,6 @@ def _wait_for_empty(queue: queue.Queue, wait_after_empty: int = 1) -> None:
     time.sleep(wait_after_empty)
 
 
-def _full_path(
-        basedir: Path,
-        key: ModelKey,
-        filename: str | Path,
-) -> Path:
-    return (
-        basedir
-        / hfhub.file_download.repo_folder_name(repo_id=key.hf_path, repo_type='model')
-        / (key.revision or 'main')
-        / filename
-    )
-
-
 class TestCompletionTracker(unittest.TestCase):
     def setUp(self):
         self.tracker: CompletionTracker = CompletionTracker()
