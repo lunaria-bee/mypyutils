@@ -636,11 +636,10 @@ class DiskThread(Thread):
 
 
 import unittest, unittest.mock
-import collections.abc
+import os
 import queue
 import tempfile
 import time
-import typing
 
 
 class _TestCaseThreadDataMixin:
@@ -660,9 +659,31 @@ class _TestCaseThreadDataMixin:
 
 
 class _TestCaseMockHfHubPatchMixin:
-    # TODO Bring more in line with HF behavior.
-    # TODO Nested paths to test relative paths correctness.
-    # TODO Symlinks (including intermediary links) to test link correctness.
+    # TODO Factor shared code in mock functions?
+
+    MOCK_FILENAMES = (
+        'base_dir_file_0',
+        'base_dir_file_1',
+        'dir_0/uniquely_named_file_in_dir_0',
+        'dir_0/non_uniquely_named_file_differentiated_by_dir',
+        'dir_1/uniquely_named_file_in_dir_1',
+        'dir_1/non_uniquely_named_file_differentiated_by_dir',
+        'dir_1/dir_1_0/uniquely_named_file_in_dir_1_0',
+        'dir_1/dir_1_0/non_uniquely_named_file_differentiated_by_dir',
+    )
+    MOCK_BLOB_PATHS = tuple(f'blob_{i}' for i in range(len(MOCK_FILENAMES)))
+    MOCK_LINK_TARGET_MAP = {
+        'base_dir_file_0': 'blob_0',
+        'base_dir_file_1': 'file_1_blob_1_intermediary_link',
+        'link_dir/file_1_blob_1_intermediary_link': 'blob_1',
+        'dir_0/uniquely_named_file_in_dir_0': 'blob_2',
+        'dir_0/non_uniquely_named_file_differentiated_by_dir': 'blob_3',
+        'dir_1/uniquely_named_file_in_dir_1': 'blob_4',
+        'dir_1/non_uniquely_named_file_differentiated_by_dir': 'blob_5',
+        'dir_1/dir_1_0/uniquely_named_file_in_dir_1_0': 'blob_6',
+        'dir_1/dir_1_0/non_uniquely_named_file_differentiated_by_dir': 'blob_7',
+    }
+
     def set_up_hf_hub_patchers(self):
         self.hfhub_snapshot_download_patcher = unittest.mock.patch(
             'huggingface_hub.snapshot_download',
@@ -690,30 +711,45 @@ class _TestCaseMockHfHubPatchMixin:
             **_,
     ) -> list[hfhub.DryRunFileInfo]:
         if revision is None:
-            revision = 'main'
+            revision = hfhub.constants.DEFAULT_REVISION
 
         if cache_dir is None:
-            cache_dir = Path('.')
+            raise ValueError("Expected cache_dir to be set")
         else:
             cache_dir = Path(cache_dir)
 
         if not dry_run:
             raise ValueError("Expected dry_run to be True")
 
-        storage_dir = Path(
-            cache_dir,
-            hfhub.file_download.repo_folder_name(repo_id=repo_id, repo_type=repo_type),
+        repo_folder_name: str = hfhub.file_download.repo_folder_name(
+            repo_id=repo_id,
+            repo_type=repo_type,
         )
-        return [
-            hfhub.DryRunFileInfo(
+        storage_dir: Path = cache_dir / repo_folder_name
+
+        file_infos: list[hfhub.DryRunFileInfo] = []
+        for filename in _TestCaseMockHfHubPatchMixin.MOCK_FILENAMES:
+            # Resolve to target blob, iteratively passing through any
+            # intermediary links.
+            target: str = filename
+            while target in _TestCaseMockHfHubPatchMixin.MOCK_LINK_TARGET_MAP:
+                target: str = _TestCaseMockHfHubPatchMixin.MOCK_LINK_TARGET_MAP[target]
+
+            # Determnine paths.
+            local_path: Path = storage_dir / 'snapshots' / revision / filename
+            blob_path: Path = storage_dir / 'blobs' / target
+
+            # Construct file info.
+            file_infos.append(hfhub.DryRunFileInfo(
                 commit_hash=revision,
                 file_size=0,
-                filename=str(Path(revision, filename)),
-                local_path=str(storage_dir / revision / filename),
-                is_cached=(storage_dir / revision / filename).is_file(),
-                will_download=not (storage_dir / revision / filename).is_file(),
-            ) for filename in _MOCK_FILENAMES
-        ]
+                filename=str(filename),
+                local_path=str(local_path),
+                is_cached=blob_path.is_file(),
+                will_download=(not blob_path.is_file()),
+            ))
+
+        return file_infos
 
     @staticmethod
     def _mock_hfhub_hf_hub_download(
@@ -726,22 +762,51 @@ class _TestCaseMockHfHubPatchMixin:
             **_,
     ) -> str:
         if revision is None:
-            revision = 'main'
+            revision = hfhub.constants.DEFAULT_REVISION
 
         if cache_dir is None:
             raise ValueError("Expected cache_dir to be specified")
         else:
             cache_dir = Path(cache_dir)
 
-        storage_dir = Path(
-            cache_dir,
-            hfhub.file_download.repo_folder_name(repo_id=repo_id, repo_type=repo_type),
+        repo_folder_name: str = hfhub.file_download.repo_folder_name(
+            repo_id=repo_id,
+            repo_type=repo_type,
         )
-        path = storage_dir / filename
-        path.parent.mkdir(exist_ok=True, parents=True)
-        path.touch()
-        print(path)
-        return str(path)
+        storage_dir: Path = cache_dir / repo_folder_name
+
+        # Set up destination dirs.
+        blob_dir: Path = storage_dir / 'blobs'
+        snapshot_dir: Path = storage_dir / 'snapshots' / revision
+        blob_dir.mkdir(parents=True, exist_ok=True)
+        snapshot_dir.mkdir(parents=True, exist_ok=True)
+
+        local_path: Path = snapshot_dir / filename
+
+        # Iteratively establish links to targets until reaching a non-link
+        # target.
+        while filename in _TestCaseMockHfHubPatchMixin.MOCK_LINK_TARGET_MAP:
+            target: str = _TestCaseMockHfHubPatchMixin.MOCK_LINK_TARGET_MAP[filename]
+
+            if target in _TestCaseMockHfHubPatchMixin.MOCK_LINK_TARGET_MAP:
+                # Target is an intermediary link, place in snapshot_dir.
+                target_dir: Path = snapshot_dir
+            else:
+                # Target is blob, place in blob_dir.
+                target_dir: Path = blob_dir
+
+            os.symlink(
+                snapshot_dir / filename,
+                target_dir / target,
+            )
+
+            # Process next target.
+            filename = target
+
+        # Followed link to terminal file, which is a blob.
+        (blob_dir / filename).touch(exist_ok=True)
+
+        return str(local_path)
 
 
 def _wait_for_empty(queue: queue.Queue, wait_after_empty: int = 1) -> None:
