@@ -1154,7 +1154,6 @@ class TestNetThread(unittest.TestCase, _TestCaseThreadDataMixin, _TestCaseMockHf
 
     def setUp(self) -> None:
         logging.basicConfig()
-        _log.setLevel('DEBUG')
         self.set_up_hf_hub_patchers()
         self.set_up_thread_data()
         self.net_thread = NetThread(self.thread_data)
