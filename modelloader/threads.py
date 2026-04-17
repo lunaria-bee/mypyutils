@@ -872,6 +872,41 @@ class _TestCaseMockHfHubPatchMixin:
             filename,
         )
 
+    def find_missing_or_incorrect_files(
+            self,
+            repo_id: str,
+            base_dir: str | Path,
+            revision: str | None,
+            filenames: Iterable[str],
+    ) -> list[str]:
+        if revision is None:
+            revision = hfhub.constants.DEFAULT_REVISION
+
+        result: list[str] = []
+        for link in filenames:
+            link_path: str = self.local_path(
+                repo_id,
+                base_dir,
+                revision,
+                link,
+            )
+            # Expect to exist and be symlink.
+            if not os.path.islink(link_path):
+                result.append(link_path)
+
+            target: str = self.MOCK_LINK_TARGET_MAP[link]
+            if target not in self.MOCK_LINK_TARGET_MAP.keys():
+                blob_path: str = self.blob_path(
+                    repo_id,
+                    base_dir,
+                    target,
+                )
+                # Expect to exist and *not* be symlink.
+                if not os.path.isfile(blob_path) or os.path.islink(blob_path):
+                    result.append(blob_path)
+
+        return result
+
 
 def _wait_for_empty(queue: queue.Queue, wait_after_empty: int = 1) -> None:
     while not queue.empty(): pass
@@ -1177,7 +1212,12 @@ class TestNetThread(unittest.TestCase, _TestCaseThreadDataMixin, _TestCaseMockHf
         msg = self.thread_data.disk_msgq.get_msg().content
         self.assertIsInstance(msg, ModelStageToCacheCmd)
         # Verify that files exist in stage.
-        self._verify_files(self.MOCK_FILENAMES, self.thread_data.stagedir)
+        self.assertEqual([],  self.find_missing_or_incorrect_files(
+            self.KEY.hf_path,
+            self.thread_data.stagedir,
+            self.KEY.revision,
+            self.MOCK_FILENAMES,
+        ))
         # Verify that hf_hub_download was called expected number of times.
         self.assertEqual(hfhub.hf_hub_download.call_count, len(self.MOCK_FILENAMES))
 
@@ -1207,7 +1247,12 @@ class TestNetThread(unittest.TestCase, _TestCaseThreadDataMixin, _TestCaseMockHf
         msg = self.thread_data.disk_msgq.get_msg().content
         self.assertIsInstance(msg, ModelStageToCacheCmd)
         # Verify that files exist in stage.
-        self._verify_files(uncached_files, self.thread_data.stagedir)
+        self.assertEqual([], self.find_missing_or_incorrect_files(
+            self.KEY.hf_path,
+            self.thread_data.stagedir,
+            self.KEY.revision,
+            uncached_files,
+        ))
         # Verify that hf_hub_download was called expected number of times.
         self.assertEqual(hfhub.hf_hub_download.call_count, len(uncached_files))
         # Verify that hf_hub_download was called for uncached files.
@@ -1257,7 +1302,12 @@ class TestNetThread(unittest.TestCase, _TestCaseThreadDataMixin, _TestCaseMockHf
         msg = self.thread_data.disk_msgq.get_msg().content
         self.assertIsInstance(msg, ModelDownloadForStagingCompleteMsg)
         # Verify that files exist in stage.
-        self._verify_files(dl_filenames, self.thread_data.stagedir)
+        self.assertEqual([], self.find_missing_or_incorrect_files(
+            self.KEY.hf_path,
+            self.thread_data.stagedir,
+            self.KEY.revision,
+            dl_filenames,
+        ))
         # Verify that hf_hub_download was called expected number of times.
         self.assertEqual(hfhub.hf_hub_download.call_count, len(dl_filenames))
         # Verify that hf_hub_download was called for requested files.
@@ -1266,24 +1316,6 @@ class TestNetThread(unittest.TestCase, _TestCaseThreadDataMixin, _TestCaseMockHf
         # Verify that hf_hub_download was not called for any non-requested files.
         for filename in no_dl_filenames:
             self.assertFalse(self._hf_hub_download_called_for_filename(filename))
-
-    def _verify_files(self, filenames: Iterable[str], base_dir: str | Path):
-        for link in filenames:
-            target: str = self.MOCK_LINK_TARGET_MAP[link]
-            self.assertTrue(os.path.islink(self.local_path(
-                self.KEY.hf_path,
-                base_dir,
-                self.KEY.revision,
-                link,
-            )))
-            if target not in self.MOCK_LINK_TARGET_MAP.keys():
-                blob_path: str = self.blob_path(
-                    self.KEY.hf_path,
-                    base_dir,
-                    target,
-                )
-                self.assertTrue(os.path.isfile(blob_path))
-                self.assertFalse(os.path.islink(blob_path))
 
     def _hf_hub_download_called_for_filename(self, filename: str):
         return any(
