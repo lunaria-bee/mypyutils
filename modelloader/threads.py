@@ -701,6 +701,45 @@ class _TestCaseMockHfHubPatchMixin:
         self.hfhub_hf_hub_download_patcher.stop()
 
     @staticmethod
+    def storage_dir(
+            repo_id: str,
+            cache_dir: str | Path,
+    ) -> str:
+        repo_folder_name: str = hfhub.file_download.repo_folder_name(
+            repo_id=repo_id,
+            repo_type='model',
+        )
+        return os.path.join(cache_dir, repo_folder_name)
+
+    @staticmethod
+    def local_path(
+            repo_id: str,
+            cache_dir: str | Path,
+            revision: str | None,
+            filename: str | None = None,
+    ) -> str:
+        if revision is None:
+            revision = hfhub.constants.DEFAULT_REVISION
+
+        storage_dir: str = _TestCaseMockHfHubPatchMixin.storage_dir(repo_id, cache_dir)
+        if filename is None:
+            return os.path.join(storage_dir, 'snapshots', revision)
+        else:
+            return os.path.join(storage_dir, 'snapshots', revision, filename)
+
+    @staticmethod
+    def blob_path(
+            repo_id: str,
+            cache_dir: str | Path,
+            filename: str | None = None,
+    ):
+        storage_dir: str = _TestCaseMockHfHubPatchMixin.storage_dir(repo_id, cache_dir)
+        if filename is None:
+            return os.path.join(storage_dir, 'blobs')
+        else:
+            return os.path.join(storage_dir, 'blobs', filename)
+
+    @staticmethod
     def _mock_hfhub_snapshot_download(
             repo_id: str,
             *,
@@ -713,6 +752,11 @@ class _TestCaseMockHfHubPatchMixin:
         if revision is None:
             revision = hfhub.constants.DEFAULT_REVISION
 
+        if repo_type is not 'model':
+            raise ValueError(
+                f"Expected repo_type to be 'model', not {repr(repo_type)}"
+            )
+
         if cache_dir is None:
             raise ValueError("Expected cache_dir to be set")
         else:
@@ -720,12 +764,6 @@ class _TestCaseMockHfHubPatchMixin:
 
         if not dry_run:
             raise ValueError("Expected dry_run to be True")
-
-        repo_folder_name: str = hfhub.file_download.repo_folder_name(
-            repo_id=repo_id,
-            repo_type=repo_type,
-        )
-        storage_dir: Path = cache_dir / repo_folder_name
 
         file_infos: list[hfhub.DryRunFileInfo] = []
         for filename in _TestCaseMockHfHubPatchMixin.MOCK_FILENAMES:
@@ -736,17 +774,26 @@ class _TestCaseMockHfHubPatchMixin:
                 target: str = _TestCaseMockHfHubPatchMixin.MOCK_LINK_TARGET_MAP[target]
 
             # Determnine paths.
-            local_path: Path = storage_dir / 'snapshots' / revision / filename
-            blob_path: Path = storage_dir / 'blobs' / target
+            local_path: str = _TestCaseMockHfHubPatchMixin.local_path(
+                repo_id,
+                cache_dir,
+                revision,
+                filename,
+            )
+            blob_path: str = _TestCaseMockHfHubPatchMixin.blob_path(
+                repo_id,
+                cache_dir,
+                target,
+            )
 
             # Construct file info.
             file_infos.append(hfhub.DryRunFileInfo(
                 commit_hash=revision,
                 file_size=0,
-                filename=str(filename),
-                local_path=str(local_path),
-                is_cached=blob_path.is_file(),
-                will_download=(not blob_path.is_file()),
+                filename=filename,
+                local_path=local_path,
+                is_cached=os.path.isfile(blob_path),
+                will_download=(not os.path.isfile(blob_path)),
             ))
 
         return file_infos
@@ -769,44 +816,44 @@ class _TestCaseMockHfHubPatchMixin:
         else:
             cache_dir = Path(cache_dir)
 
-        repo_folder_name: str = hfhub.file_download.repo_folder_name(
-            repo_id=repo_id,
-            repo_type=repo_type,
-        )
-        storage_dir: Path = cache_dir / repo_folder_name
-
         # Set up destination dirs.
-        blob_dir: Path = storage_dir / 'blobs'
-        snapshot_dir: Path = storage_dir / 'snapshots' / revision
+        local_dir: Path = Path(_TestCaseMockHfHubPatchMixin.local_path(
+            repo_id,
+            cache_dir,
+            revision,
+        ))
+        blob_dir: Path = Path(_TestCaseMockHfHubPatchMixin.blob_path(
+            repo_id,
+            cache_dir,
+        ))
+        local_dir.mkdir(parents=True, exist_ok=True)
         blob_dir.mkdir(parents=True, exist_ok=True)
-        snapshot_dir.mkdir(parents=True, exist_ok=True)
-
-        local_path: Path = snapshot_dir / filename
 
         # Iteratively establish links to targets until reaching a non-link
         # target.
-        while filename in _TestCaseMockHfHubPatchMixin.MOCK_LINK_TARGET_MAP:
-            target: str = _TestCaseMockHfHubPatchMixin.MOCK_LINK_TARGET_MAP[filename]
+        cur_filename: str = filename
+        while cur_filename in _TestCaseMockHfHubPatchMixin.MOCK_LINK_TARGET_MAP:
+            target: str = _TestCaseMockHfHubPatchMixin.MOCK_LINK_TARGET_MAP[cur_filename]
 
             if target in _TestCaseMockHfHubPatchMixin.MOCK_LINK_TARGET_MAP:
                 # Target is an intermediary link, place in snapshot_dir.
-                target_dir: Path = snapshot_dir
+                target_dir: Path = local_dir
             else:
                 # Target is blob, place in blob_dir.
                 target_dir: Path = blob_dir
 
             os.symlink(
-                snapshot_dir / filename,
+                local_dir / cur_filename,
                 target_dir / target,
             )
 
             # Process next target.
-            filename = target
+            cur_filename = target
 
         # Followed link to terminal file, which is a blob.
         (blob_dir / filename).touch(exist_ok=True)
 
-        return str(local_path)
+        return str(local_dir / filename)
 
 
 def _wait_for_empty(queue: queue.Queue, wait_after_empty: int = 1) -> None:
