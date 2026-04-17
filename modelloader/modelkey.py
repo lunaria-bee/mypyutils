@@ -4,6 +4,12 @@ from pathlib import Path
 from typing import NamedTuple, Union
 
 
+__all__ = (
+    'ModelKey',
+    'KeyLike',
+)
+
+
 class ModelKey(NamedTuple):
     '''Unique identifier for a model.'''
 
