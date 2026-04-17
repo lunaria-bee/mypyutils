@@ -675,7 +675,7 @@ class _TestCaseMockHfHubPatchMixin:
     MOCK_BLOB_PATHS = tuple(f'blob_{i}' for i in range(len(MOCK_FILENAMES)))
     MOCK_LINK_TARGET_MAP = {
         'base_dir_file_0': 'blob_0',
-        'base_dir_file_1': 'file_1_blob_1_intermediary_link',
+        'base_dir_file_1': 'link_dir/file_1_blob_1_intermediary_link',
         'link_dir/file_1_blob_1_intermediary_link': 'blob_1',
         'dir_0/uniquely_named_file_in_dir_0': 'blob_2',
         'dir_0/non_uniquely_named_file_differentiated_by_dir': 'blob_3',
@@ -895,15 +895,26 @@ class _TestCaseMockHfHubPatchMixin:
                 result.append(link_path)
 
             target: str = self.MOCK_LINK_TARGET_MAP[link]
-            if target not in self.MOCK_LINK_TARGET_MAP.keys():
-                blob_path: str = self.blob_path(
+            while target in self.MOCK_LINK_TARGET_MAP.keys():
+                intermediary_path: str = self.local_path(
                     repo_id,
                     base_dir,
+                    revision,
                     target,
                 )
-                # Expect to exist and *not* be symlink.
-                if not os.path.isfile(blob_path) or os.path.islink(blob_path):
-                    result.append(blob_path)
+                # Expect to exist and be intermediary symlink.
+                if not os.path.islink(intermediary_path):
+                    result.append(intermediary_path)
+                target = self.MOCK_LINK_TARGET_MAP[target]
+
+            blob_path: str = self.blob_path(
+                repo_id,
+                base_dir,
+                target,
+            )
+            # Expect to exist and *not* be symlink.
+            if not os.path.isfile(blob_path) or os.path.islink(blob_path):
+                result.append(blob_path)
 
         return result
 
@@ -1393,7 +1404,7 @@ class TestDiskThread(unittest.TestCase, _TestCaseThreadDataMixin, _TestCaseMockH
             self.KEY.hf_path,
             self.thread_data.stagedir,
             self.KEY.revision,
-            self.MOCK_FILENAMES,
+            cached_files,
         ))
 
     def test_model_cache_to_stage_cmd_when_all_files_cached(self):
@@ -1420,8 +1431,12 @@ class TestDiskThread(unittest.TestCase, _TestCaseThreadDataMixin, _TestCaseMockH
             self.KEY.revision,
             self.MOCK_FILENAMES,
         ))
-        # Verify no message on net thread msgq.
-        self.assertTrue(self.thread_data.net_msgq.queue.empty())
+        # Verify no message sent to net thread. Check against op_id instead of
+        # just checking for empty queue, so that we don't get a false failure
+        # from the _activity_flush message.
+        while not self.thread_data.net_msgq.queue.empty():
+            msg = self.thread_data.net_msgq.get_msg().content
+            self.assertNotEqual(msg.op_id, self.OP_ID)
         # Check main thread msgq for ModelStageCompleteMsg.
         msg = self.thread_data.main_msgq.get_msg().content
         self.assertIsInstance(msg, ModelStageCompleteMsg)
@@ -1512,13 +1527,14 @@ class TestDiskThread(unittest.TestCase, _TestCaseThreadDataMixin, _TestCaseMockH
                 self.thread_data.cachedir,
                 target,
             )
+            expect_missing.add(target_path)
         self.assertEqual(
             expect_missing,
             set(self.find_missing_or_incorrect_files(
                 self.KEY.hf_path,
                 self.thread_data.cachedir,
                 self.KEY.revision,
-                copy_filenames,
+                self.MOCK_FILENAMES,
             )),
         )
         # Check main thread msgq for ModelCacheCompleteMsg.
