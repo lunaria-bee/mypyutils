@@ -821,44 +821,55 @@ class _TestCaseMockHfHubPatchMixin:
         else:
             cache_dir = Path(cache_dir)
 
-        # Set up destination dirs.
-        local_dir: Path = Path(_TestCaseMockHfHubPatchMixin.local_path(
-            repo_id,
-            cache_dir,
-            revision,
-        ))
-        blob_dir: Path = Path(_TestCaseMockHfHubPatchMixin.blob_path(
-            repo_id,
-            cache_dir,
-        ))
-        local_dir.mkdir(parents=True, exist_ok=True)
-        blob_dir.mkdir(parents=True, exist_ok=True)
-
         # Iteratively establish links to targets until reaching a non-link
         # target.
         cur_filename: str = filename
         while cur_filename in _TestCaseMockHfHubPatchMixin.MOCK_LINK_TARGET_MAP:
+            cur_filename_path: Path = Path(_TestCaseMockHfHubPatchMixin.local_path(
+                repo_id,
+                cache_dir,
+                revision,
+                cur_filename,
+            ))
+
             target: str = _TestCaseMockHfHubPatchMixin.MOCK_LINK_TARGET_MAP[cur_filename]
-
-            if target in _TestCaseMockHfHubPatchMixin.MOCK_LINK_TARGET_MAP:
-                # Target is an intermediary link, place in snapshot_dir.
-                target_dir: Path = local_dir
+            if target in _TestCaseMockHfHubPatchMixin.MOCK_LINK_TARGET_MAP.keys():
+                # Target is an intermediary link.
+                target_path: Path = Path(_TestCaseMockHfHubPatchMixin.local_path(
+                    repo_id,
+                    cache_dir,
+                    revision,
+                    target,
+                ))
             else:
-                # Target is blob, place in blob_dir.
-                target_dir: Path = blob_dir
+                # Target is blob.
+                target_path: Path = Path(_TestCaseMockHfHubPatchMixin.blob_path(
+                    repo_id,
+                    cache_dir,
+                    target,
+                ))
 
-            os.symlink(
-                local_dir / cur_filename,
-                target_dir / target,
-            )
+            cur_filename_path.parent.mkdir(parents=True, exist_ok=True)
+            cur_filename_path.symlink_to(target_path)
 
             # Process next target.
             cur_filename = target
 
         # Followed link to terminal file, which is a blob.
-        (blob_dir / filename).touch(exist_ok=True)
+        blob_path: Path = Path(_TestCaseMockHfHubPatchMixin.blob_path(
+            repo_id,
+            cache_dir,
+            cur_filename,
+        ))
+        blob_path.parent.mkdir(parents=True, exist_ok=True)
+        blob_path.touch(exist_ok=True)
 
-        return str(local_dir / filename)
+        return _TestCaseMockHfHubPatchMixin.local_path(
+            repo_id,
+            cache_dir,
+            revision,
+            filename,
+        )
 
 
 def _wait_for_empty(queue: queue.Queue, wait_after_empty: int = 1) -> None:
