@@ -1363,10 +1363,7 @@ class TestDiskThread(unittest.TestCase, _TestCaseThreadDataMixin, _TestCaseMockH
         self.assertIsInstance(msg, ModelDownloadForStagingCmd)
         self.assertEqual(
             set(msg.filenames) if msg.filenames else None,
-            set(
-                str(Path(self.KEY.revision or 'main', filename))
-                for filename in _MOCK_FILENAMES
-            ),
+            set(self.MOCK_FILENAMES),
         )
         # Verify that stagedir is empty.
         self.assertEqual(
@@ -1375,13 +1372,20 @@ class TestDiskThread(unittest.TestCase, _TestCaseThreadDataMixin, _TestCaseMockH
         )
 
     def test_model_cache_to_stage_cmd_when_some_files_cached(self):
-        cached_files = _MOCK_FILENAMES[:len(_MOCK_FILENAMES)//2]
-        uncached_files = _MOCK_FILENAMES[len(_MOCK_FILENAMES)//2:]
-        # "Cache" files.
+        num_filenames: int = len(self.MOCK_FILENAMES)
+        cached_files: collections.abc.Sequence[str] = \
+            self.MOCK_FILENAMES[:num_filenames//2]
+        uncached_files: collections.abc.Sequence[str] = \
+            self.MOCK_FILENAMES[num_filenames//2:]
+        # Cache files.
         for filename in cached_files:
-            path = _full_path(self.thread_data.cachedir, self.KEY, filename)
-            path.parent.mkdir(exist_ok=True, parents=True)
-            path.touch()
+            self._mock_hfhub_hf_hub_download(
+                repo_id=self.KEY.hf_path,
+                repo_type='model',
+                revision=self.KEY.revision,
+                filename=filename,
+                cache_dir=self.thread_data.cachedir,
+            )
         # Send command.
         self.thread_data.main_msgq.send_msg(
             self.thread_data.disk_msgq,
@@ -1394,113 +1398,199 @@ class TestDiskThread(unittest.TestCase, _TestCaseThreadDataMixin, _TestCaseMockH
         self.assertIsInstance(msg, ModelDownloadForStagingCmd)
         self.assertEqual(
             set(msg.filenames) if msg.filenames else None,
-            set(
-                str(Path(self.KEY.revision or 'main', filename))
-                for filename in uncached_files
-            ),
+            set(uncached_files),
         )
         # Verify that stagedir contains cached files.
         self._activity_flush()
-        self.assertTrue(all(
-            _full_path(self.thread_data.stagedir, self.KEY, filename).is_file()
-            for filename in cached_files
+        self.assertEqual([], self.find_missing_or_incorrect_files(
+            self.KEY.hf_path,
+            self.thread_data.stagedir,
+            self.KEY.revision,
+            self.MOCK_FILENAMES,
         ))
 
     def test_model_cache_to_stage_cmd_when_all_files_cached(self):
-        # "Cache" files.
-        for filename in _MOCK_FILENAMES:
-            path = _full_path(self.thread_data.cachedir, self.KEY, filename)
-            path.parent.mkdir(exist_ok=True, parents=True)
-            path.touch()
+        # Cache files.
+        for filename in self.MOCK_FILENAMES:
+            self._mock_hfhub_hf_hub_download(
+                repo_id=self.KEY.hf_path,
+                repo_type='model',
+                revision=self.KEY.revision,
+                filename=filename,
+                cache_dir=self.thread_data.cachedir,
+            )
         # Send command.
         self.thread_data.main_msgq.send_msg(
             self.thread_data.disk_msgq,
             MSG_NORMAL_PRIORITY,
             ModelCacheToStageCmd(self.OP_ID, self.KEY, None),
         )
-        # Verify no message on net thread msgq.
-        self.assertTrue(self.thread_data.net_msgq.queue.empty())
         # Verify that stagedir contains cached files.
         self._activity_flush()
-        self.assertTrue(all(
-            _full_path(self.thread_data.stagedir, self.KEY, filename).is_file()
-            for filename in _MOCK_FILENAMES
+        self.assertEqual([], self.find_missing_or_incorrect_files(
+            self.KEY.hf_path,
+            self.thread_data.stagedir,
+            self.KEY.revision,
+            self.MOCK_FILENAMES,
         ))
+        # Verify no message on net thread msgq.
+        self.assertTrue(self.thread_data.net_msgq.queue.empty())
+        # Check main thread msgq for ModelStageCompleteMsg.
+        msg = self.thread_data.main_msgq.get_msg().content
+        self.assertIsInstance(msg, ModelStageCompleteMsg)
 
-    def test_model_stage_to_cache_cmd_with_unset_files_field(self):
+    def test_model_stage_to_cache_cmd_with_unset_local_paths_field(self):
         # Populate stagedir with expected files.
-        for filename in _MOCK_FILENAMES:
-            path = _full_path(self.thread_data.stagedir, self.KEY, filename)
-            path.parent.mkdir(exist_ok=True, parents=True)
-            path.touch()
+        for filename in self.MOCK_FILENAMES:
+            self._mock_hfhub_hf_hub_download(
+                repo_id=self.KEY.hf_path,
+                repo_type='model',
+                revision=self.KEY.revision,
+                filename=filename,
+                cache_dir=self.thread_data.stagedir,
+            )
         # Send command.
         self.thread_data.net_msgq.send_msg(
             self.thread_data.disk_msgq,
             MSG_HIGH_PRIORITY,
             ModelStageToCacheCmd(self.OP_ID, self.KEY, None),
         )
+        # Verify that cachedir contains expected files.
+        self._activity_flush()
+        self.assertEqual([], self.find_missing_or_incorrect_files(
+            self.KEY.hf_path,
+            self.thread_data.cachedir,
+            self.KEY.revision,
+            self.MOCK_FILENAMES,
+        ))
         # Check main thread msgq for ModelCacheCompleteMsg.
         msg = self.thread_data.main_msgq.get_msg().content
         self.assertIsInstance(msg, ModelCacheCompleteMsg)
-        # Verify that cachedir contains expected files.
-        self._activity_flush()
-        self.assertTrue(all(
-            _full_path(self.thread_data.stagedir, self.KEY, filename).is_file()
-            for filename in _MOCK_FILENAMES
-        ))
 
-    def test_model_stage_to_cache_cmd_with_set_files_field(self):
-        filenames = _MOCK_FILENAMES[:len(_MOCK_FILENAMES)//2]
-        # Populate stagedir with expected files.
-        for filename in filenames:
-            path = _full_path(self.thread_data.stagedir, self.KEY, filename)
-            path.parent.mkdir(exist_ok=True, parents=True)
-            path.touch()
+    def test_model_stage_to_cache_cmd_with_set_local_paths_field(self):
+        num_filenames: int = len(self.MOCK_FILENAMES)
+        copy_filenames: collections.abc.Sequence[str] = \
+            self.MOCK_FILENAMES[:num_filenames//2]
+        no_copy_filenames: collections.abc.Sequence[str] = \
+            self.MOCK_FILENAMES[num_filenames//2:]
+        # Populate stagedir with all files.
+        for filename in self.MOCK_FILENAMES:
+            self._mock_hfhub_hf_hub_download(
+                repo_id=self.KEY.hf_path,
+                repo_type='model',
+                revision=self.KEY.revision,
+                filename=filename,
+                cache_dir=self.thread_data.stagedir,
+            )
         # Send command.
-        files = [
-            str(Path(self.KEY.revision or 'main', filename))
-            for filename in filenames
+        local_paths: list[str] = [
+            self.local_path(
+                self.KEY.hf_path,
+                self.thread_data.stagedir,
+                self.KEY.revision,
+                filename,
+            ) for filename in copy_filenames
         ]
         self.thread_data.net_msgq.send_msg(
             self.thread_data.disk_msgq,
             MSG_HIGH_PRIORITY,
-            ModelStageToCacheCmd(self.OP_ID, self.KEY, files),
+            ModelStageToCacheCmd(self.OP_ID, self.KEY, local_paths),
+        )
+        # Verify that cachedir contains specified files and only specified files.
+        self._activity_flush()
+        expect_missing: set[str] = set()
+        for filename in no_copy_filenames:
+            # Add link to expected missing paths.
+            filename_path: str = self.local_path(
+                self.KEY.hf_path,
+                self.thread_data.cachedir,
+                self.KEY.revision,
+                filename,
+            )
+            expect_missing.add(filename_path)
+            target: str = self.MOCK_LINK_TARGET_MAP[filename]
+            # Add any intermediary links to expected missing paths.
+            while target in self.MOCK_LINK_TARGET_MAP.keys():
+                target_path: str = self.local_path(
+                    self.KEY.hf_path,
+                    self.thread_data.cachedir,
+                    self.KEY.revision,
+                    target,
+                )
+                expect_missing.add(target_path)
+                target = self.MOCK_LINK_TARGET_MAP[target]
+            # Add blob to expected missing paths.
+            target_path: str = self.blob_path(
+                self.KEY.hf_path,
+                self.thread_data.cachedir,
+                target,
+            )
+        self.assertEqual(
+            expect_missing,
+            set(self.find_missing_or_incorrect_files(
+                self.KEY.hf_path,
+                self.thread_data.cachedir,
+                self.KEY.revision,
+                copy_filenames,
+            )),
         )
         # Check main thread msgq for ModelCacheCompleteMsg.
         msg = self.thread_data.main_msgq.get_msg().content
         self.assertIsInstance(msg, ModelCacheCompleteMsg)
-        # Verify that cachedir contains expected files.
-        self._activity_flush()
-        self.assertTrue(all(
-            _full_path(self.thread_data.cachedir, self.KEY, filename).is_file()
-            for filename in filenames
-        ))
 
     def test_model_download_for_staging_complete_msg(self):
-        # Populate stagedir with expected files.
-        for filename in _MOCK_FILENAMES:
-            path = _full_path(self.thread_data.stagedir, self.KEY, filename)
-            path.parent.mkdir(exist_ok=True, parents=True)
-            path.touch()
+        num_filenames: int = len(self.MOCK_FILENAMES)
+        dled_filenames: collections.abc.Sequence[str] = \
+            self.MOCK_FILENAMES[:num_filenames//2]
+        cached_filenames: collections.abc.Sequence[str] = \
+            self.MOCK_FILENAMES[num_filenames//2:]
+        # Populate stagedir with "downloaded" files, i.e. files that net thread
+        # would have downloaded based on the instructions in
+        # ModelDownloadForSTagingCmd.
+        for filename in dled_filenames:
+            self._mock_hfhub_hf_hub_download(
+                repo_id=self.KEY.hf_path,
+                repo_type='model',
+                revision=self.KEY.revision,
+                filename=filename,
+                cache_dir=self.thread_data.stagedir,
+            )
+        # Populate cachedir with "cached" files, i.e. files that would have
+        # already been in cachedir with disk thread sent
+        # ModelDownloadForStagingCmd to net thread.
+        for filename in cached_filenames:
+            self._mock_hfhub_hf_hub_download(
+                repo_id=self.KEY.hf_path,
+                repo_type='model',
+                revision=self.KEY.revision,
+                filename=filename,
+                cache_dir=self.thread_data.cachedir,
+            )
         # Send message.
-        files = [
-            str(Path(self.KEY.revision or 'main', filename))
-            for filename in _MOCK_FILENAMES
+        local_paths: list[str] = [
+            self.local_path(
+                self.KEY.hf_path,
+                self.thread_data.stagedir,
+                self.KEY.revision,
+                filename,
+            ) for filename in dled_filenames
         ]
         self.thread_data.net_msgq.send_msg(
             self.thread_data.disk_msgq,
             MSG_HIGH_PRIORITY,
-            ModelDownloadForStagingCompleteMsg(self.OP_ID, self.KEY, files),
+            ModelDownloadForStagingCompleteMsg(self.OP_ID, self.KEY, local_paths),
         )
+        # Verify that cachedir contains all files.
+        self._activity_flush()
+        self.assertEqual([], self.find_missing_or_incorrect_files(
+            self.KEY.hf_path,
+            self.thread_data.cachedir,
+            self.KEY.revision,
+            self.MOCK_FILENAMES,
+        ))
         # Check main thread msgq for ModelStageCompleteMsg.
         msg = self.thread_data.main_msgq.get_msg().content
         self.assertIsInstance(msg, ModelStageCompleteMsg)
-        # Verify that cachedir contains expected files.
-        self._activity_flush()
-        self.assertTrue(all(
-            _full_path(self.thread_data.cachedir, self.KEY, filename).is_file()
-            for filename in _MOCK_FILENAMES
-        ))
 
     def _activity_flush(self):
         # Push dummy message to disk thread and then wait for queue to empty, to
