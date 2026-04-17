@@ -636,6 +636,7 @@ class DiskThread(Thread):
 
 
 import unittest, unittest.mock
+import collections.abc
 import os
 import queue
 import tempfile
@@ -1176,22 +1177,26 @@ class TestNetThread(unittest.TestCase, _TestCaseThreadDataMixin, _TestCaseMockHf
         # Check disk thread msgq for ModelStageToCacheCmd.
         msg = self.thread_data.disk_msgq.get_msg().content
         self.assertIsInstance(msg, ModelStageToCacheCmd)
-        # Check that files exist.
-        self.assertTrue(all(
-            _full_path(self.thread_data.stagedir, self.KEY, filename).is_file()
-            for filename in _MOCK_FILENAMES
-        ))
-        # Check that hf_hub_download called expected number of times.
-        self.assertEqual(hfhub.hf_hub_download.call_count, len(_MOCK_FILENAMES))
+        # Verify that files exist in stage.
+        self._verify_files(self.MOCK_FILENAMES, self.thread_data.stagedir)
+        # Verify that hf_hub_download was called expected number of times.
+        self.assertEqual(hfhub.hf_hub_download.call_count, len(self.MOCK_FILENAMES))
 
     def test_model_download_for_caching_cmd_when_some_files_cached(self):
-        cached_files = _MOCK_FILENAMES[:len(_MOCK_FILENAMES)//2]
-        uncached_files = _MOCK_FILENAMES[len(_MOCK_FILENAMES)//2:]
-        # "Cache" files.
+        num_filenames: int = len(self.MOCK_FILENAMES)
+        cached_files: collections.abc.Sequence[str] = \
+            self.MOCK_FILENAMES[:num_filenames//2]
+        uncached_files: collections.abc.Sequence[str] = \
+            self.MOCK_FILENAMES[num_filenames//2:]
+        # Cache files.
         for filename in cached_files:
-            path = _full_path(self.thread_data.cachedir, self.KEY, filename)
-            path.parent.mkdir(exist_ok=True, parents=True)
-            path.touch()
+            self._mock_hfhub_hf_hub_download(
+                repo_id=self.KEY.hf_path,
+                repo_type='model',
+                revision=self.KEY.revision,
+                filename=filename,
+                cache_dir=self.thread_data.cachedir,
+            )
         # Send command.
         msg = ModelDownloadForCachingCmd(self.OP_ID, self.KEY, None)
         self.thread_data.main_msgq.send_msg(
@@ -1202,31 +1207,27 @@ class TestNetThread(unittest.TestCase, _TestCaseThreadDataMixin, _TestCaseMockHf
         # Check disk thread msgq for ModelStageToCacheCmd.
         msg = self.thread_data.disk_msgq.get_msg().content
         self.assertIsInstance(msg, ModelStageToCacheCmd)
-        # Verify that files exist.
-        self.assertTrue(all(
-            _full_path(self.thread_data.stagedir, self.KEY, filename).is_file()
-            for filename in uncached_files
-        ))
+        # Verify that files exist in stage.
+        self._verify_files(uncached_files, self.thread_data.stagedir)
+        # Verify that hf_hub_download was called expected number of times.
+        self.assertEqual(hfhub.hf_hub_download.call_count, len(uncached_files))
         # Verify that hf_hub_download was called for uncached files.
-        self._activity_flush()
         for filename in uncached_files:
-            self.assertTrue(any(
-                call.kwargs['filename'].endswith(filename)
-                for call in hfhub.hf_hub_download.call_args_list
-            ))
+            self.assertTrue(self._hf_hub_download_called_for_filename(filename))
         # Verify that hf_hub_download was NOT called for cached files.
         for filename in cached_files:
-            self.assertFalse(any(
-                call.kwargs['filename'].endswith(filename)
-                for call in hfhub.hf_hub_download.call_args_list
-            ))
+            self.assertFalse(self._hf_hub_download_called_for_filename(filename))
 
     def test_model_download_for_caching_cmd_when_all_files_cached(self):
         # "Cache" files.
-        for filename in _MOCK_FILENAMES:
-            path = _full_path(self.thread_data.cachedir, self.KEY, filename)
-            path.parent.mkdir(exist_ok=True, parents=True)
-            path.touch()
+        for filename in self.MOCK_FILENAMES:
+            self._mock_hfhub_hf_hub_download(
+                repo_id=self.KEY.hf_path,
+                repo_type='model',
+                revision=self.KEY.revision,
+                filename=filename,
+                cache_dir=self.thread_data.cachedir,
+            )
         # Send command.
         msg = ModelDownloadForCachingCmd(self.OP_ID, self.KEY, None)
         self.thread_data.main_msgq.send_msg(
@@ -1241,9 +1242,13 @@ class TestNetThread(unittest.TestCase, _TestCaseThreadDataMixin, _TestCaseMockHf
         hfhub.hf_hub_download.assert_not_called()
 
     def test_model_download_for_staging_cmd(self):
-        filenames = _MOCK_FILENAMES[:len(_MOCK_FILENAMES)//2]
+        num_filenames: int = len(self.MOCK_FILENAMES)
+        dl_filenames: collections.abc.Iterable[str] = \
+            self.MOCK_FILENAMES[:num_filenames//2]
+        no_dl_filenames: collections.abc.Iterable[str] = \
+            self.MOCK_FILENAMES[num_filenames//2:]
         # Send command.
-        msg = ModelDownloadForStagingCmd(self.OP_ID, self.KEY, filenames)
+        msg = ModelDownloadForStagingCmd(self.OP_ID, self.KEY, dl_filenames)
         self.thread_data.disk_msgq.send_msg(
             self.thread_data.net_msgq,
             MSG_NORMAL_PRIORITY,
@@ -1252,14 +1257,40 @@ class TestNetThread(unittest.TestCase, _TestCaseThreadDataMixin, _TestCaseMockHf
         # Check disk thread msgq for ModelDownloadForStagingCompleteMsg.
         msg = self.thread_data.disk_msgq.get_msg().content
         self.assertIsInstance(msg, ModelDownloadForStagingCompleteMsg)
-        # Check that files exist.
-        self._activity_flush()
-        self.assertTrue(all(
-            _full_path(self.thread_data.stagedir, self.KEY, filename).is_file()
-            for filename in filenames
-        ))
-        # Check that hf_hub_download called expected number of times.
-        self.assertEqual(hfhub.hf_hub_download.call_count, len(filenames))
+        # Verify that files exist in stage.
+        self._verify_files(dl_filenames, self.thread_data.stagedir)
+        # Verify that hf_hub_download was called expected number of times.
+        self.assertEqual(hfhub.hf_hub_download.call_count, len(dl_filenames))
+        # Verify that hf_hub_download was called for requested files.
+        for filename in dl_filenames:
+            self.assertTrue(self._hf_hub_download_called_for_filename(filename))
+        # Verify that hf_hub_download was not called for any non-requested files.
+        for filename in no_dl_filenames:
+            self.assertFalse(self._hf_hub_download_called_for_filename(filename))
+
+    def _verify_files(self, filenames: Iterable[str], base_dir: str | Path):
+        for link in filenames:
+            target: str = self.MOCK_LINK_TARGET_MAP[link]
+            self.assertTrue(os.path.islink(self.local_path(
+                self.KEY.hf_path,
+                base_dir,
+                self.KEY.revision,
+                link,
+            )))
+            if target not in self.MOCK_LINK_TARGET_MAP.keys():
+                blob_path: str = self.blob_path(
+                    self.KEY.hf_path,
+                    base_dir,
+                    target,
+                )
+                self.assertTrue(os.path.isfile(blob_path))
+                self.assertFalse(os.path.islink(blob_path))
+
+    def _hf_hub_download_called_for_filename(self, filename: str):
+        return any(
+            call.kwargs['filename'] == filename
+            for call in hfhub.hf_hub_download.call_args_list
+        )
 
     def _activity_flush(self):
         # Push dummy message to net thread and then wait for queue to empty, to
