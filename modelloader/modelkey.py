@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from pathlib import Path
 from typing import NamedTuple, Union
 
 
@@ -47,22 +46,6 @@ class ModelKey(NamedTuple):
             raise ValueError(
                 f"Cannot interpret {repr(key)} as ModelKey"
             )
-
-    def model_subpath(self) -> Path:
-        '''Subpath to use for storing models in unique directories.
-
-        Path will be of the form ``{hf_path}/{revision}``, with any forward
-        slashes (``/``) in either component converted to periods (``.``). This
-        is to prevent slashes in model paths or revision names from introducing
-        additional sublevels into the directory structure. If :attr:`revision`
-        is ``None``, the ``{revision}`` component of the path will default to
-        ``main``.
-
-        '''
-        return Path(
-            self.hf_path.replace('/', '.'),
-            self.revision.replace('/', '.') if self.revision else 'main',
-        )
 
 
 type KeyLike = Union[
