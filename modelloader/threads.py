@@ -732,7 +732,7 @@ class _TestCaseMockHfHubPatchMixin:
             repo_id: str,
             cache_dir: str | Path,
             filename: str | None = None,
-    ):
+    ) -> str:
         storage_dir: str = _TestCaseMockHfHubPatchMixin.storage_dir(repo_id, cache_dir)
         if filename is None:
             return os.path.join(storage_dir, 'blobs')
