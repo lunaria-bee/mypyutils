@@ -39,9 +39,10 @@ autoapi_python_class_content = 'both'
 autoapi_options =  [
     'members',
     'inherited-members',
-    'private-members',
+    'undoc-members',
     'show-inheritance',
     'show-module-summary',
+    'imported-members',
 ]
 
 # sphinx.ext.intersphinx
