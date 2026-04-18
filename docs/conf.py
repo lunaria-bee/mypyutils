@@ -47,7 +47,9 @@ autoapi_options =  [
 
 # sphinx.ext.intersphinx
 intersphinx_mapping = {
+    'huggingface_hub': ('https://huggingface.co/docs/huggingface_hub/master/en/', None),
     'python': ('https://docs.python.org/3/', None),
+    'transformers': ('https://huggingface.co/docs/transformers/master/en/', None),
 }
 
 templates_path = ['_templates']
