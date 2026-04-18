@@ -9,8 +9,8 @@ import queue
 import subprocess
 from threading import Event, Lock, Thread
 
-from messages import *
-from modelkey import KeyLike, ModelKey
+from .messages import *
+from .modelkey import KeyLike, ModelKey
 
 
 __all__ = (

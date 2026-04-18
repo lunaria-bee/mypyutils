@@ -8,7 +8,7 @@ from queue import PriorityQueue
 from threading import current_thread, Event, Lock
 from typing import NamedTuple, Optional, Union
 
-from modelkey import ModelKey
+from .modelkey import ModelKey
 
 
 __all__ = (
