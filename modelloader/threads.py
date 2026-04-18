@@ -1,8 +1,9 @@
-from collections.abc import Iterable
+from collections.abc import Collection, Iterable
 from dataclasses import dataclass, field
 import enum
 import huggingface_hub as hfhub
 import logging
+import os
 from pathlib import Path
 import queue
 import subprocess
@@ -591,11 +592,18 @@ class DiskThread(Thread):
 
             # Insert '/./' between source base dir and rest of path, to ensure
             # correct relative copying.
-            paths_to_copy.append(f'{source}/./{path.relative_to(source)}')
+            paths_to_copy.append(f'{source}/./{path.absolute().relative_to(source)}')
 
-            # Resolve symlinks until reaching target.
             if path.is_symlink():
-                paths_to_process.append(path.readlink())
+                # Process symlink target. If the target is a relative path or
+                # contains relative components, normalize it. If the target is
+                # itself a symlink, do not follow it: We want to copy all
+                # symlinks to maintain the directory structure HuggingFace
+                # expects to see, and so will wait until future iterations to
+                # continue resolving the link chain.
+                paths_to_process.append(Path(
+                    os.path.normpath(path.parent / path.readlink())
+                ))
 
         # Build rsync command.
         rsync_cmd = [
