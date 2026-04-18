@@ -268,16 +268,26 @@ class NetThread(Thread):
     def _handle_model_download_for_caching_cmd(self, msg) -> None:
         '''Handle :class:`ModelDownloadForCachingCmd`.
 
-        Download any missing or dirty files from HuggingFace to stage, then send
-        :class:`ModelStageToCacheCmd` to :class:`DiskThread`.
+        Download any missing or dirty files from HuggingFace to stage. If files
+        were downloaded, send :class:`ModelStageToCacheCmd` to
+        :class:`DiskThread`. If files were not downloaded, model is already
+        cached, send :class:`ModelCacheCompleteMsg` to :class:`MainThread`.
 
         '''
-        local_paths = self._download(msg)
-        self.msgq.send_msg(
-            self.thread_data.disk_msgq,
-            MSG_HIGH_PRIORITY,
-            ModelStageToCacheCmd(msg.op_id, msg.key, local_paths),
-        )
+        local_paths: list[str] = self._download(msg)
+        if local_paths:
+            self.msgq.send_msg(
+                self.thread_data.disk_msgq,
+                MSG_HIGH_PRIORITY,
+                ModelStageToCacheCmd(msg.op_id, msg.key, local_paths),
+            )
+        else:
+            self.msgq.send_msg(
+                self.thread_data.main_msgq,
+                MSG_HIGH_PRIORITY,
+                ModelCacheCompleteMsg(msg.op_id, msg.key),
+            )
+
         # TODO Unstage?
 
     def _handle_model_download_for_staging_cmd(self, msg) -> None:
@@ -433,9 +443,10 @@ class DiskThread(Thread):
                 )
             )
 
-        _log.debug(f"caching {local_paths}")
+        _log.debug(f"caching {repr(local_paths)}")
 
-        self._rsync(local_paths, self._RsyncDirection.STAGE_TO_CACHE)
+        if local_paths:
+            self._rsync(local_paths, self._RsyncDirection.STAGE_TO_CACHE)
 
         self.msgq.send_msg(
             self.thread_data.main_msgq,
@@ -555,9 +566,13 @@ class DiskThread(Thread):
 
     def _rsync(
             self,
-            local_paths: Iterable[str],
+            local_paths: Collection[str],
             direction: _RsyncDirection,
-    ) -> subprocess.CompletedProcess:
+    ) -> subprocess.CompletedProcess | None:
+        if not local_paths:
+            _log.debug("local_paths empty, returning")
+            return
+
         # TODO Copy blob and symlink, inserting '/./' into the appropriate
         # section of the path to ensure correct relative copy.
         match direction:
