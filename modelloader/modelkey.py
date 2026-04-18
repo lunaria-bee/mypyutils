@@ -53,7 +53,7 @@ type KeyLike = Union[
     str,
     tuple[str, Union[str, None]],
 ]
-'''Type for values that can be interpreted as :class:`ModelKey`s.'''
+r'''Type for values that can be interpreted as :class:`ModelKey`\ s.'''
 
 
 import unittest

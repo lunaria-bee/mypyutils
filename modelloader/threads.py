@@ -511,9 +511,9 @@ class DiskThread(Thread):
     def _handle_model_rm_from_stage_cmd(self, msg: ModelRmFromStageCmd):
         '''Handle :class:`ModelUnstageCmd`.
 
-        Remove requested :ref:`files <ModelUnstageCmd.filenames>`, or, if
-        :attr:`msg.filenames <ModelUnstageCmd.filenames>` is ``None``, remove entire
-        staging directory for requested model. Then, send
+        Remove requested :ref:`files <ModelRmFromStageCmd.local_paths>`, or, if
+        :attr:`msg.local_paths <ModelRmFromStage.local_paths>` is ``None``,
+        remove entire staging directory for requested model. Then, send
         :class:`ModelUnstageCompleteMsg` to :class:`MainThread`.
 
         '''
