@@ -1,111 +1,100 @@
-from collections.abc import Iterable
-import logging
 from pathlib import Path
-from queue import PriorityQueue
-from threading import Event
+from threading import Event, Lock
 from transformers import AutoModel, AutoTokenizer, PreTrainedModel, PreTrainedTokenizer
-from typing import Union
 
-from messages import *
-from modelkey import KeyLike, ModelKey
-from threads import *
-from util import PathOrStr
+from .messages import *
+from .modelkey import KeyLike, ModelKey
+from .threads import ThreadData, MainThread, NetThread, DiskThread
 
 
-# TODO Make messages all have the form `(priority, data)`.
+__all__ = (
+    'ModelLoader',
+)
+
 
 # TODO Handle inability to make requests due to HF rate limits. Look into how
 # load_from_pretrained determines what files it needs to load for a model,
 # especially when `local_files_only=True`.
 
-# TODO Unified way to log source and destination of passed messages upon sending
-# and receipt.
-
-
-_log = logging.getLogger(__name__)
-
-
-# TODO A tuple of two HF paths (2 keys) is indistinguishable from a (hf path,
-# revision) pair. Fix this by just using arg packs of *keys.
-type Keys = Union[KeyLike, Iterable[KeyLike]]
-'''Type for valid arguments to function parameters that can accept one or more
-:class:`ModelKeys`.'''
-
-
-def _normalize_keys_arg(keys) -> Iterable[ModelKey]:
-    if isinstance(keys, (ModelKey, str, tuple)):
-        return [ModelKey.convert_from(keys)]
-    else:
-        return [ModelKey.convert_from(key) for key in keys]
-
 
 class ModelLoader:
-    '''TODO'''
+    '''Cache and stage HuggingFace models in background threads so they're ready
+    when you need them.
+
+    This is the main interface to the :mod:`modelloader` system. See module-level
+    documentation for more.
+
+    '''
 
     # Design note: It makes sense to have separate threads for caching and
     # staging, as these are blocked by separate I/O resources (internet and
     # intranet, respectively).
 
-    def __init__(self, cachedir: PathOrStr, stagedir: PathOrStr):
+    def __init__(self, cachedir: Path | str, stagedir: Path | str):
+        '''Constructor.
+
+        :param cachedir:
+            Directory in slow, persistent storage, where data will be cached.
+
+        :param stagedir:
+            Directory in fast, volatile storage, where data will be staged.
+
+        '''
         # TODO Way to set default model loading kwargs.
         # TODO Way to set default tokenizer loading kwargs.
 
-        self._cachedir = Path(cachedir)
-        '''Directory where models will be cached.'''
+        # Private storage for paths.
+        self._cachedir: Path = Path(cachedir)
+        self._stagedir: Path = Path(stagedir)
 
-        self._stagedir = Path(stagedir)
-        '''Directory where models will be staged for loading to memory.'''
+        # Used to determine op_id message field.
+        self._next_op_id: int = 0
+        self._next_op_id_lock: Lock = Lock()
 
-        self._cache_complete = CompletionTracker()
-        self._stage_complete = CompletionTracker()
-        main_msgq: PriorityQueue[MainMsg] = PriorityQueue()
-        net_msgq: PriorityQueue[NetMsg] = PriorityQueue()
-        disk_msgq: PriorityQueue[DiskMsg] = PriorityQueue()
-        self._main_thread = MainThread(
-            self._cache_complete,
-            self._stage_complete,
-            net_msgq,
-            disk_msgq,
-            main_msgq,
-        )
-        self._net_thread = NetThread(
-            self._cachedir,
-            self._stagedir,
-            disk_msgq,
-            net_msgq,
-        )
-        self._disk_thread = DiskThread(
-            self._cachedir,
-            self._stagedir,
-            main_msgq,
-            net_msgq,
-            disk_msgq,
-        )
+        # Threads and associated data.
+        self._thread_data: ThreadData = \
+            ThreadData(self._cachedir, self._stagedir)
+        self._main_thread: MainThread = MainThread(self._thread_data)
+        self._net_thread: NetThread = NetThread(self._thread_data)
+        self._disk_thread: DiskThread = DiskThread(self._thread_data)
+
         self._main_thread.start()
         self._net_thread.start()
         self._disk_thread.start()
 
     @property
-    def cachedir(self):
-        ''':attr:`_cachedir` accessor.'''
+    def cachedir(self) -> Path:
+        '''Directory for caching.'''
         return self._cachedir
 
     @property
-    def stagedir(self):
-        ''':attr:`_stagedir` accessor.'''
+    def stagedir(self) -> Path:
+        '''Directory for staging.'''
         return self._stagedir
 
-    def cache(self, keys: Keys):
-        '''TODO'''
-        keys = _normalize_keys_arg(keys)
-        for key in keys:
-            self._main_thread.msgq.put(ModelCacheCmd(MSG_NORMAL_PRIORITY, key))
+    def cache(self, *keys: KeyLike) -> None:
+        '''Instruct loader to cache models.'''
+        with self._next_op_id_lock:
+            for key in keys:
+                self._thread_data.main_msgq.put_msg_from_client(
+                    MSG_NORMAL_PRIORITY,
+                    ModelCacheCmd(self._next_op_id, ModelKey.convert_from(key)),
+                )
+                self._next_op_id += 1
 
-    def stage(self, keys: Keys):
-        '''TODO'''
-        keys = _normalize_keys_arg(keys)
-        for key in keys:
-            self._main_thread.msgq.put(ModelStageCmd(MSG_NORMAL_PRIORITY, key))
+    def stage(self, *keys: KeyLike) -> None:
+        '''Instruct loader to stage models.
+
+        Any uncached models will be cached automatically.
+
+        '''
+        with self._next_op_id_lock:
+            for key in keys:
+                self._thread_data.main_msgq.put_msg_from_client(
+                    MSG_NORMAL_PRIORITY,
+                    ModelStageCmd(self._next_op_id, ModelKey.convert_from(key)),
+                )
+                self._next_op_id += 1
 
     def load(
             self,
@@ -114,7 +103,12 @@ class ModelLoader:
             tokenizer_type=AutoTokenizer,
             device_map=None,
     ) -> tuple[PreTrainedModel, PreTrainedTokenizer]:
-        '''TODO'''
+        '''Load a staged model and its tokenizer.
+
+        The model will be automatically cached and staged if they have not been
+        already.
+
+        '''
         key = ModelKey.convert_from(key)
 
         self._ensure_stage(key)
@@ -130,7 +124,12 @@ class ModelLoader:
             model_type=AutoModel,
             device_map=None,
     ) -> PreTrainedModel:
-        '''TODO'''
+        '''Load a staged model.
+
+        The model will be automatically cached and staged if it has not been
+        already.
+
+        '''
         key = ModelKey.convert_from(key)
         self._ensure_stage(key)
         return self._load_model(key, model_type, device_map)
@@ -146,7 +145,7 @@ class ModelLoader:
         return model_type.from_pretrained(
             key.hf_path,
             revision=key.revision,
-            cache_dir=self.stagedir / self._model_subpath(key),
+            cache_dir=self.stagedir,
             device_map=device_map,
             local_files_only=True,
         )
@@ -156,7 +155,12 @@ class ModelLoader:
             key: KeyLike,
             tokenizer_type=AutoTokenizer,
     ) -> PreTrainedTokenizer:
-        '''TODO'''
+        '''Load a staged tokenizer.
+
+        The model for this tokenizer will be cached and staged if it has not
+        been already.
+
+        '''
         key = ModelKey.convert_from(key)
         self._ensure_stage(key)
         return self._load_tokenizer(key, tokenizer_type)
@@ -172,7 +176,7 @@ class ModelLoader:
         return tokenizer_type.from_pretrained(
             key.hf_path,
             revision=key.revision,
-            cache_dir=self.stagedir / self._model_subpath(key),
+            cache_dir=self.stagedir,
             local_files_only=True,
         )
 
@@ -188,87 +192,13 @@ class ModelLoader:
         :meth:`_MainThread._handle_model_stage_complete_msg()` for more.
 
         '''
-        if not self._stage_complete.is_complete(key):
+        if not self._thread_data.stage_complete.is_complete(key):
             self.stage(key)
             event = Event()
-            self._main_thread.msgq.put(
-                ModelRegisterForStageCompleteCmd(
-                    MSG_HIGH_PRIORITY,
-                    key,
-                    event,
-                )
+            self._thread_data.main_msgq.put_msg_from_client(
+                MSG_HIGH_PRIORITY,
+                ModelRegisterForStageCompleteCmd(key, event),
             )
             event.wait()
 
     # TODO unstage
-
-    @staticmethod
-    def _model_subpath(key: ModelKey) -> Path:
-        '''Common subpath to use for model in both cachedir and stagedir.'''
-        # TODO Handle `key.revision==None`.
-        # Replace slashes with periods to…
-        # 1. …have top-level directories correspond to models rather than
-        #    HuggingFace users.
-        # 2. …prevent revision names with slashes from creating additional
-        #    subdirectories.
-        return Path(
-            key.hf_path.replace('/', '.'),
-            key.revision.replace('/', '.') if key.revision else 'main',
-        )
-
-
-import unittest
-class TestModelLoaderSequetialUsage(unittest.TestCase):
-    # TODO Separate boundaries.
-
-    MODEL_KEYS = [
-        'EleutherAI/pythia-160m',
-        ModelKey('EleutherAI/pythia-160m', 'step1'),
-    ]
-
-    EXPECTED_MODEL_SUBPATHS: list[Path] = [
-        Path('EleutherAI.pythia-160m/main/'),
-        Path('EleutherAI.pythia-160m/step1/'),
-    ]
-
-    @classmethod
-    def setUpClass(cls) -> None:
-        import tempfile
-        cls.tmp_cachedir = tempfile.TemporaryDirectory(prefix='cache_')
-        cls.tmp_stagedir = tempfile.TemporaryDirectory(prefix='stage_')
-        cls.loader = ModelLoader(cls.tmp_cachedir.name, cls.tmp_stagedir.name)
-
-    def test_cache(self):
-        import time
-
-        self.loader.cache(self.MODEL_KEYS)
-
-        while any(
-                self.loader._cache_complete.is_complete(ModelKey.convert_from(key))
-                for key in self.MODEL_KEYS
-        ): time.sleep(1)
-
-        for path in self.EXPECTED_MODEL_SUBPATHS:
-            self.assertTrue(Path(
-                self.tmp_cachedir.name,
-                path,
-            ).is_dir())
-
-    def test_stage(self):
-        self.loader.stage(self.MODEL_KEYS)
-
-        for key in self.MODEL_KEYS:
-            key = ModelKey.convert_from(key)
-            self.loader._ensure_stage(key)
-
-        for path in self.EXPECTED_MODEL_SUBPATHS:
-            self.assertTrue(Path(
-                self.tmp_stagedir.name,
-                path,
-            ).is_dir())
-
-    def test_load(self):
-        for key in self.MODEL_KEYS:
-            model, tokenizer = self.loader.load(key)
-            self.assertIsNot(model, None)
-            self.assertIsNot(tokenizer, None)
