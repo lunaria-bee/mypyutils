@@ -1,3 +1,4 @@
+from abc import ABC, abstractmethod
 from collections.abc import Collection, Iterable
 from dataclasses import dataclass, field
 import enum
@@ -99,7 +100,35 @@ class ThreadData:
 # handling).
 
 
-class MainThread(Thread):
+class _ModelLoaderThread[M](Thread, ABC):
+    '''TODO'''
+
+    def __init__(self, thread_data: ThreadData):
+        super().__init__()
+        self.thread_data: ThreadData = thread_data
+        self._exit: bool = False
+
+    @property
+    @abstractmethod
+    def msgq(self) -> ModelLoaderMessager[M]:
+        pass
+
+    @abstractmethod
+    def handle_msg(self, msg_wrapper: ModelLoaderMsgWrapper[M]) -> None:
+        pass
+
+    def run(self):
+        while not self._exit:
+            try:
+                self.handle_msg(self.msgq.get_msg(timeout=MAX_BLOCK_SECS))
+            except queue.Empty:
+                # We don't actually do anything here, the timeout is just to
+                # make sure self._exit gets rechecked.
+                pass
+
+
+# TODO Rename: `MainThread` is also the name/type for Python's default thread.
+class MainThread(_ModelLoaderThread[MainMsg]):
     '''Main thread execution class.
 
     The main thread:
@@ -110,31 +139,23 @@ class MainThread(Thread):
     '''
 
     def __init__(self, thread_data: ThreadData):
-        super().__init__()
-        self.thread_data: ThreadData = thread_data
-        self.msgq: ModelLoaderMessager[MainMsg] = thread_data.main_msgq
-        '''Unlayered reference to local message manager, for legibility and
-        convenience.'''
+        super().__init__(thread_data)
         self.stage_complete_registry: dict[ModelKey, list[Event]] = dict()
-        self._exit: bool = False
 
-    def run(self):
-        msg_handler_map = {
+    @property
+    def msgq(self) -> ModelLoaderMessager[MainMsg]:
+        return self.thread_data.main_msgq
+
+    def handle_msg(self, msg_wrapper: ModelLoaderMsgWrapper[MainMsg]) -> None:
+        msg: MainMsg = msg_wrapper.content
+        {
             ModelCacheCmd: self._handle_model_cache_cmd,
             ModelStageCmd: self._handle_model_stage_cmd,
             ModelRegisterForStageCompleteCmd: self._handle_model_register_for_stage_complete_cmd,
             ModelCacheCompleteMsg: self._handle_model_cache_complete_msg,
             ModelStageCompleteMsg: self._handle_model_stage_complete_msg,
             ModelUnstageCompleteMsg: self._handle_model_unstage_complete_msg,
-        }
-        while not self._exit:
-            try:
-                msg: MainMsg = self.msgq.get_msg(timeout=MAX_BLOCK_SECS).content
-                msg_handler_map[type(msg)](msg)
-            except queue.Empty:
-                # We don't actually do anything here, the timeout is just to
-                # make sure self._exit gets rechecked.
-                pass
+        }[type(msg)](msg)
 
     def _handle_model_cache_cmd(self, msg: ModelCacheCmd) -> None:
         '''Handle :class:`ModelCacheCmd`.
@@ -146,11 +167,10 @@ class MainThread(Thread):
         if self.thread_data.cache_complete.is_complete(msg.key):
             _log.debug(f"{msg.key} cached: do nothing")
         else:
-            new_msg = ModelDownloadForCachingCmd(msg.op_id, msg.key, None)
             self.msgq.send_msg(
                 self.thread_data.net_msgq,
                 MSG_NORMAL_PRIORITY,
-                new_msg,
+                ModelDownloadForCachingCmd(msg.op_id, msg.key, None),
             )
 
     def _handle_model_stage_cmd(self, msg: ModelStageCmd) -> None:
@@ -163,11 +183,10 @@ class MainThread(Thread):
         if self.thread_data.stage_complete.is_complete(msg.key):
             _log.debug(f"{msg.key} staged: do nothing")
         else:
-            new_msg = ModelCacheToStageCmd(msg.op_id, msg.key, None)
             self.msgq.send_msg(
                 self.thread_data.disk_msgq,
                 MSG_NORMAL_PRIORITY,
-                new_msg,
+                ModelCacheToStageCmd(msg.op_id, msg.key, None),
             )
 
     def _handle_model_register_for_stage_complete_cmd(
@@ -241,30 +260,19 @@ class MainThread(Thread):
         self.thread_data.stage_complete.unmark_complete(msg.key)
 
 
-class NetThread(Thread):
+class NetThread(_ModelLoaderThread[NetMsg]):
     '''TODO'''
 
-    def __init__(self, thread_data: ThreadData):
-        super().__init__()
-        self.thread_data: ThreadData = thread_data
-        self.msgq: ModelLoaderMessager[NetMsg] = thread_data.net_msgq
-        '''Unlayered reference to local message manager, for legibility and
-        convenience.'''
-        self._exit: bool = False
+    @property
+    def msgq(self) -> ModelLoaderMessager[NetMsg]:
+        return self.thread_data.net_msgq
 
-    def run(self):
-        msg_handler_map = {
+    def handle_msg(self, msg_wrapper: ModelLoaderMsgWrapper[NetMsg]) -> None:
+        msg: NetMsg = msg_wrapper.content
+        {
             ModelDownloadForCachingCmd: self._handle_model_download_for_caching_cmd,
             ModelDownloadForStagingCmd: self._handle_model_download_for_staging_cmd,
-        }
-        while not self._exit:
-            try:
-                msg: NetMsg = self.msgq.get_msg(timeout=MAX_BLOCK_SECS).content
-                msg_handler_map[type(msg)](msg)
-            except queue.Empty:
-                # We don't actually do anything here, the timeout is just to
-                # make sure self._exit gets rechecked.
-                pass
+        }[type(msg)](msg)
 
     def _handle_model_download_for_caching_cmd(self, msg) -> None:
         '''Handle :class:`ModelDownloadForCachingCmd`.
@@ -338,32 +346,21 @@ class NetThread(Thread):
         return local_paths
 
 
-class DiskThread(Thread):
+class DiskThread(_ModelLoaderThread[DiskMsg]):
     '''TODO'''
 
-    def __init__(self, thread_data: ThreadData):
-        super().__init__()
-        self.thread_data: ThreadData = thread_data
-        self.msgq: ModelLoaderMessager[DiskMsg] = thread_data.disk_msgq
-        '''Unlayered reference to local message manager, for legibility and
-        convenience.'''
-        self._exit: bool = False
+    @property
+    def msgq(self) -> ModelLoaderMessager[DiskMsg]:
+        return self.thread_data.disk_msgq
 
-    def run(self):
-        msg_handler_map = {
+    def handle_msg(self, msg_wrapper: ModelLoaderMsgWrapper[DiskMsg]) -> None:
+        msg: DiskMsg = msg_wrapper.content
+        {
             ModelCacheToStageCmd: self._handle_model_cache_to_stage_cmd,
             ModelStageToCacheCmd: self._handle_model_stage_to_cache_cmd,
             ModelDownloadForStagingCompleteMsg: self._handle_model_download_for_staging_complete_msg,
             ModelUnstageCmd: self._handle_model_rm_from_stage_cmd,
-        }
-        while not self._exit:
-            try:
-                msg: DiskMsg = self.msgq.get_msg(timeout=MAX_BLOCK_SECS).content
-                msg_handler_map[type(msg)](msg)
-            except queue.Empty:
-                # We don't actually do anything here, the timeout is just to
-                # make sure self._exit gets rechecked.
-                pass
+        }[type(msg)](msg)
 
     def _handle_model_cache_to_stage_cmd(self, msg: ModelCacheToStageCmd):
         '''Handle :class:`ModelCacheToStageCmd`.
