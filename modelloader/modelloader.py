@@ -1,6 +1,8 @@
+import enum
 from pathlib import Path
 from threading import Event, Lock
 from transformers import AutoModel, AutoTokenizer, PreTrainedModel, PreTrainedTokenizer
+from typing import Optional
 
 from .messages import *
 from .modelkey import KeyLike, ModelKey
@@ -17,6 +19,21 @@ __all__ = (
 # especially when `local_files_only=True`.
 
 
+class ModelLoaderShutdownUrgency(enum.Enum):
+    '''How urgently to shut down ModelLoader system.'''
+    FINISH_OPS = enum.auto()
+    '''Allow cache/stage/load operations that were queued before shutdown to
+    complete.'''
+    IMMEDIATE = enum.auto()
+    '''Shut down without allowing previously-queued operations to complete.'''
+
+
+class ModelLoaderCmdAfterShutdownError(Exception):
+    '''Raised if a :class:`ModelLoader` client attempts to issue a new
+    cache/stage/load command after ``ModelLoader`` shutdown.'''
+    pass
+
+
 class ModelLoader:
     '''Cache and stage HuggingFace models in background threads so they're ready
     when you need them.
@@ -29,6 +46,8 @@ class ModelLoader:
     # Design note: It makes sense to have separate threads for caching and
     # staging, as these are blocked by separate I/O resources (internet and
     # intranet, respectively).
+
+    # TODO unstage_on_exit option.
 
     def __init__(self, cachedir: Path | str, stagedir: Path | str):
         '''Constructor.
@@ -50,6 +69,10 @@ class ModelLoader:
         # Used to determine op_id message field.
         self._next_op_id: int = 0
         self._next_op_id_lock: Lock = Lock()
+
+        # Used to check for shutdown state.
+        self._shutdown: bool
+        self._shutdown_lock: Lock = Lock()
 
         # Threads and associated data.
         self._thread_data: ThreadData = \
@@ -74,6 +97,8 @@ class ModelLoader:
 
     def cache(self, *keys: KeyLike) -> None:
         '''Instruct loader to cache models.'''
+        self._cmd_after_shutdown_check()
+
         with self._next_op_id_lock:
             for key in keys:
                 self._thread_data.main_msgq.put_msg_from_client(
@@ -88,6 +113,8 @@ class ModelLoader:
         Any uncached models will be cached automatically.
 
         '''
+        self._cmd_after_shutdown_check()
+
         with self._next_op_id_lock:
             for key in keys:
                 self._thread_data.main_msgq.put_msg_from_client(
@@ -109,6 +136,8 @@ class ModelLoader:
         already.
 
         '''
+        self._cmd_after_shutdown_check()
+
         key = ModelKey.convert_from(key)
 
         self._ensure_stage(key)
@@ -130,6 +159,8 @@ class ModelLoader:
         already.
 
         '''
+        self._cmd_after_shutdown_check()
+
         key = ModelKey.convert_from(key)
         self._ensure_stage(key)
         return self._load_model(key, model_type, device_map)
@@ -161,6 +192,8 @@ class ModelLoader:
         been already.
 
         '''
+        self._cmd_after_shutdown_check()
+
         key = ModelKey.convert_from(key)
         self._ensure_stage(key)
         return self._load_tokenizer(key, tokenizer_type)
@@ -200,5 +233,53 @@ class ModelLoader:
                 ModelRegisterForStageCompleteCmd(key, event),
             )
             event.wait()
+
+    def shutdown(
+            self,
+            exit_urgency: ModelLoaderShutdownUrgency,
+            block: bool = False,
+    ) -> None:
+        '''Shut down ModelLoader system.
+
+        Once this has been called, no more cache, stage, or load commands may
+        be initiated. Attempting to do so will raise
+        :class:`ModelLoaderCmdAfterShutdownError`.
+
+        :param block:
+            If ``True``, block until shutdown is complete. Otherwise, return as
+            soon as shutdown is queued.
+
+        '''
+        match exit_urgency:
+            case ModelLoaderShutdownUrgency.FINISH_OPS:
+                self._thread_data.main_msgq.put_msg_from_client(
+                    MSG_NORMAL_PRIORITY,
+                    ThreadShutdownCmd(),
+                )
+            case ModelLoaderShutdownUrgency.IMMEDIATE:
+                self._main_thread.shutdown = True
+                self._net_thread.shutdown = True
+                self._disk_thread.shutdown = True
+
+        with self._shutdown_lock:
+            self._shutdown = True
+
+        if block:
+            self.wait_for_shutdown()
+
+    def wait_for_shutdown(self) -> None:
+        '''Block until shutdown is complete.
+
+        Does not initiate shutdown process; use :meth:``shutdown()`` for this.
+
+        '''
+        self._main_thread.join()
+        self._net_thread.join()
+        self._disk_thread.join()
+
+    def _cmd_after_shutdown_check(self, msg: Optional[str] = None) -> None:
+        with self._shutdown_lock:
+            if self._shutdown:
+                raise ModelLoaderCmdAfterShutdownError(msg)
 
     # TODO unstage

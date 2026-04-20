@@ -106,7 +106,7 @@ class _ModelLoaderThread[M](Thread, ABC):
     def __init__(self, thread_data: ThreadData):
         super().__init__()
         self.thread_data: ThreadData = thread_data
-        self._exit: bool = False
+        self.shutdown: bool = False
 
     @property
     @abstractmethod
@@ -118,12 +118,12 @@ class _ModelLoaderThread[M](Thread, ABC):
         pass
 
     def run(self):
-        while not self._exit:
+        while not self.shutdown:
             try:
                 self.handle_msg(self.msgq.get_msg(timeout=MAX_BLOCK_SECS))
             except queue.Empty:
                 # We don't actually do anything here, the timeout is just to
-                # make sure self._exit gets rechecked.
+                # make sure self.shutdown gets rechecked.
                 pass
 
 
@@ -140,7 +140,9 @@ class MainThread(_ModelLoaderThread[MainMsg]):
 
     def __init__(self, thread_data: ThreadData):
         super().__init__(thread_data)
+        self.outstanding_ops: set[int] = set()
         self.stage_complete_registry: dict[ModelKey, list[Event]] = dict()
+        self.prepare_shutdown: bool = False
 
     @property
     def msgq(self) -> ModelLoaderMessager[MainMsg]:
@@ -155,6 +157,7 @@ class MainThread(_ModelLoaderThread[MainMsg]):
             ModelCacheCompleteMsg: self._handle_model_cache_complete_msg,
             ModelStageCompleteMsg: self._handle_model_stage_complete_msg,
             ModelUnstageCompleteMsg: self._handle_model_unstage_complete_msg,
+            ThreadShutdownCmd: self._handle_thread_shutdown_cmd,
         }[type(msg)](msg)
 
     def _handle_model_cache_cmd(self, msg: ModelCacheCmd) -> None:
@@ -166,12 +169,18 @@ class MainThread(_ModelLoaderThread[MainMsg]):
         '''
         if self.thread_data.cache_complete.is_complete(msg.key):
             _log.debug(f"{msg.key} cached: do nothing")
+        elif self.prepare_shutdown:
+            _log.error(
+                f"Received {repr(msg)} while preparing to exit: "
+                f"do nothing"
+            )
         else:
             self.msgq.send_msg(
                 self.thread_data.net_msgq,
                 MSG_NORMAL_PRIORITY,
                 ModelDownloadForCachingCmd(msg.op_id, msg.key, None),
             )
+            self._init_op(msg.op_id)
 
     def _handle_model_stage_cmd(self, msg: ModelStageCmd) -> None:
         '''Handle :class:`ModelStageCmd`.
@@ -182,12 +191,18 @@ class MainThread(_ModelLoaderThread[MainMsg]):
         '''
         if self.thread_data.stage_complete.is_complete(msg.key):
             _log.debug(f"{msg.key} staged: do nothing")
+        elif self.prepare_shutdown:
+            _log.error(
+                f"Received {repr(msg)} while preparing to exit: "
+                f"do nothing"
+            )
         else:
             self.msgq.send_msg(
                 self.thread_data.disk_msgq,
                 MSG_NORMAL_PRIORITY,
                 ModelCacheToStageCmd(msg.op_id, msg.key, None),
             )
+            self._init_op(msg.op_id)
 
     def _handle_model_register_for_stage_complete_cmd(
             self,
@@ -229,6 +244,7 @@ class MainThread(_ModelLoaderThread[MainMsg]):
 
         '''
         self.thread_data.cache_complete.mark_complete(msg.key)
+        self._resolve_op(msg.op_id)
 
     def _handle_model_stage_complete_msg(self, msg: ModelStageCompleteMsg) -> None:
         '''Handle :class:`ModelStageCompleteMsg`.
@@ -250,6 +266,8 @@ class MainThread(_ModelLoaderThread[MainMsg]):
                 event.set()
             del self.stage_complete_registry[msg.key]
 
+        self._resolve_op(msg.op_id)
+
     def _handle_model_unstage_complete_msg(self, msg: ModelUnstageCompleteMsg) -> None:
         '''Handle :class:`ModelUnstageCompleteMsg`.
 
@@ -258,6 +276,40 @@ class MainThread(_ModelLoaderThread[MainMsg]):
 
         '''
         self.thread_data.stage_complete.unmark_complete(msg.key)
+        self._resolve_op(msg.op_id)
+
+    def _handle_thread_shutdown_cmd(self, _: ThreadShutdownCmd) -> None:
+        '''Handle :class:`ThreadShutdownCmd`.
+
+        Set :attr:`prepare_shutdown` flag. If no operations are outstanding,
+        execute shutdown.
+
+        '''
+        self.prepare_shutdown = True
+        if not self.outstanding_ops:
+            self._do_shutdown()
+
+    def _init_op(self, op_id: int):
+        self.outstanding_ops.add(op_id)
+
+    def _resolve_op(self, op_id: int):
+        self.outstanding_ops.remove(op_id)
+
+        if self.prepare_shutdown and not self.outstanding_ops:
+            self._do_shutdown()
+
+    def _do_shutdown(self):
+        self.msgq.send_msg(
+            self.thread_data.net_msgq,
+            MSG_HIGH_PRIORITY,
+            ThreadShutdownCmd(),
+        )
+        self.msgq.send_msg(
+            self.thread_data.disk_msgq,
+            MSG_HIGH_PRIORITY,
+            ThreadShutdownCmd(),
+        )
+        self.shutdown = True
 
 
 class NetThread(_ModelLoaderThread[NetMsg]):
@@ -272,6 +324,7 @@ class NetThread(_ModelLoaderThread[NetMsg]):
         {
             ModelDownloadForCachingCmd: self._handle_model_download_for_caching_cmd,
             ModelDownloadForStagingCmd: self._handle_model_download_for_staging_cmd,
+            ThreadShutdownCmd: self._handle_thread_shutdown_cmd,
         }[type(msg)](msg)
 
     def _handle_model_download_for_caching_cmd(self, msg) -> None:
@@ -312,6 +365,10 @@ class NetThread(_ModelLoaderThread[NetMsg]):
             MSG_HIGH_PRIORITY,
             ModelDownloadForStagingCompleteMsg(msg.op_id, msg.key, local_paths),
         )
+
+    def _handle_thread_shutdown_cmd(self, _: ThreadShutdownCmd):
+        '''Handle :class:`ThreadShutdownCmd`.'''
+        self.shutdown = True
 
     def _download(self, msg) -> list[str]:
         '''TODO'''
@@ -360,6 +417,7 @@ class DiskThread(_ModelLoaderThread[DiskMsg]):
             ModelStageToCacheCmd: self._handle_model_stage_to_cache_cmd,
             ModelDownloadForStagingCompleteMsg: self._handle_model_download_for_staging_complete_msg,
             ModelUnstageCmd: self._handle_model_rm_from_stage_cmd,
+            ThreadShutdownCmd: self._handle_thread_shutdown_cmd,
         }[type(msg)](msg)
 
     def _handle_model_cache_to_stage_cmd(self, msg: ModelCacheToStageCmd):
@@ -558,6 +616,10 @@ class DiskThread(_ModelLoaderThread[DiskMsg]):
             ModelUnstageCompleteMsg(msg.op_id, msg.key),
         )
 
+    def _handle_thread_shutdown_cmd(self, _: ThreadShutdownCmd):
+        '''Handle :class:`ThreadShutdownCmd`.'''
+        self.shutdown = True
+
     class _RsyncDirection(enum.Enum):
         CACHE_TO_STAGE = enum.auto()
         STAGE_TO_CACHE = enum.auto()
@@ -635,6 +697,7 @@ import os
 import queue
 import tempfile
 import time
+import typing
 
 
 class _TestCaseThreadDataMixin:
@@ -951,7 +1014,7 @@ class TestMainThread(unittest.TestCase, _TestCaseThreadDataMixin):
         self.main_thread.start()
 
     def tearDown(self) -> None:
-        self.main_thread._exit = True
+        self.main_thread.shutdown = True
         self.main_thread.join()
         self.tear_down_thread_data()
 
@@ -962,7 +1025,7 @@ class TestMainThread(unittest.TestCase, _TestCaseThreadDataMixin):
             ModelCacheCmd(self.OP_ID, self.KEY),
         )
         # Check net thread msgq for ModelDownloadForCachingCmd.
-        msg = self.thread_data.net_msgq.get_msg().content
+        msg: typing.Any = self.thread_data.net_msgq.get_msg().content
         self.assertIsInstance(msg, ModelDownloadForCachingCmd)
         # Mock model caching process.
         self.thread_data.net_msgq.send_msg(
@@ -970,7 +1033,7 @@ class TestMainThread(unittest.TestCase, _TestCaseThreadDataMixin):
             MSG_HIGH_PRIORITY,
             ModelStageToCacheCmd(msg.op_id, msg.key, msg.filenames),
         )
-        msg = self.thread_data.disk_msgq.get_msg().content
+        msg: typing.Any = self.thread_data.disk_msgq.get_msg().content
         self.thread_data.disk_msgq.send_msg(
             self.thread_data.main_msgq,
             MSG_HIGH_PRIORITY,
@@ -1002,7 +1065,7 @@ class TestMainThread(unittest.TestCase, _TestCaseThreadDataMixin):
             ModelStageCmd(self.OP_ID, self.KEY),
         )
         # Check disk thread msgq for ModelCacheToStageCmd.
-        msg = self.thread_data.disk_msgq.get_msg().content
+        msg: typing.Any = self.thread_data.disk_msgq.get_msg().content
         self.assertIsInstance(msg, ModelCacheToStageCmd)
         # Mock model staging process for cached model.
         self.thread_data.disk_msgq.send_msg(
@@ -1167,7 +1230,7 @@ class TestMainThread(unittest.TestCase, _TestCaseThreadDataMixin):
             MSG_NORMAL_PRIORITY,
             ModelStageCmd(cmd_id, key),
         )
-        msg = self.thread_data.disk_msgq.get_msg().content
+        msg: typing.Any = self.thread_data.disk_msgq.get_msg().content
         self.thread_data.disk_msgq.send_msg(
             self.thread_data.main_msgq,
             MSG_HIGH_PRIORITY,
@@ -1180,14 +1243,13 @@ class TestNetThread(unittest.TestCase, _TestCaseThreadDataMixin, _TestCaseMockHf
     OP_ID: int = 0
 
     def setUp(self) -> None:
-        logging.basicConfig()
         self.set_up_hf_hub_patchers()
         self.set_up_thread_data()
         self.net_thread = NetThread(self.thread_data)
         self.net_thread.start()
 
     def tearDown(self) -> None:
-        self.net_thread._exit = True
+        self.net_thread.shutdown = True
         self.net_thread.join()
         self.tear_down_thread_data()
         self.tear_down_hf_hub_patchers()
@@ -1337,7 +1399,7 @@ class TestDiskThread(unittest.TestCase, _TestCaseThreadDataMixin, _TestCaseMockH
         self.disk_thread.start()
 
     def tearDown(self) -> None:
-        self.disk_thread._exit = True
+        self.disk_thread.shutdown = True
         self.disk_thread.join()
         self.tear_down_thread_data()
         self.tear_down_hf_hub_patchers()
@@ -1351,7 +1413,7 @@ class TestDiskThread(unittest.TestCase, _TestCaseThreadDataMixin, _TestCaseMockH
         )
         # Check net thread msgq for ModelDownloadForStagingCmd requesting all
         # files.
-        msg = self.thread_data.net_msgq.get_msg().content
+        msg: typing.Any = self.thread_data.net_msgq.get_msg().content
         self.assertIsInstance(msg, ModelDownloadForStagingCmd)
         self.assertEqual(
             set(msg.filenames) if msg.filenames else None,
@@ -1386,7 +1448,7 @@ class TestDiskThread(unittest.TestCase, _TestCaseThreadDataMixin, _TestCaseMockH
         )
         # Check net thread msgq for ModelDownloadStagingCmd requesting uncached
         # files.
-        msg = self.thread_data.net_msgq.get_msg().content
+        msg: typing.Any = self.thread_data.net_msgq.get_msg().content
         self.assertIsInstance(msg, ModelDownloadForStagingCmd)
         self.assertEqual(
             set(msg.filenames) if msg.filenames else None,
@@ -1429,7 +1491,7 @@ class TestDiskThread(unittest.TestCase, _TestCaseThreadDataMixin, _TestCaseMockH
         # just checking for empty queue, so that we don't get a false failure
         # from the _activity_flush message.
         while not self.thread_data.net_msgq.queue.empty():
-            msg = self.thread_data.net_msgq.get_msg().content
+            msg: typing.Any = self.thread_data.net_msgq.get_msg().content
             self.assertNotEqual(msg.op_id, self.OP_ID)
         # Check main thread msgq for ModelStageCompleteMsg.
         msg = self.thread_data.main_msgq.get_msg().content
@@ -1598,3 +1660,59 @@ class TestDiskThread(unittest.TestCase, _TestCaseThreadDataMixin, _TestCaseMockH
             ModelCacheToStageCmd(self.OP_ID+1, ModelKey('arg', 'bla'), None),
         )
         _wait_for_empty(self.thread_data.disk_msgq.queue)
+
+
+class TestIntegratedThreads(unittest.TestCase, _TestCaseThreadDataMixin, _TestCaseMockHfHubPatchMixin):
+    def setUp(self) -> None:
+        self.set_up_hf_hub_patchers()
+        self.set_up_thread_data()
+        self.main_thread: MainThread = MainThread(self.thread_data)
+        self.net_thread: NetThread = NetThread(self.thread_data)
+        self.disk_thread: DiskThread = DiskThread(self.thread_data)
+
+    def tearDown(self) -> None:
+        self.tear_down_thread_data()
+        self.tear_down_hf_hub_patchers()
+
+    def test_thread_shutdown_cmd(self):
+        # Queue op commands.
+        for op_id, key in [(0, 'zero'), (1, 'one')]:
+            self.thread_data.main_msgq.put_msg_from_client(
+                MSG_NORMAL_PRIORITY,
+                ModelCacheCmd(op_id, ModelKey.convert_from(key)),
+            )
+        # Partially perform op zero.
+        self.main_thread.handle_msg(self.main_thread.msgq.get_msg())
+        self.net_thread.handle_msg(self.net_thread.msgq.get_msg())
+        # Queue exit command.
+        self.thread_data.main_msgq.put_msg_from_client(
+            MSG_NORMAL_PRIORITY,
+            ThreadShutdownCmd(),
+        )
+        # Queue follow-up command.
+        self.thread_data.main_msgq.put_msg_from_client(
+            MSG_NORMAL_PRIORITY,
+            ModelCacheCmd(2, ModelKey.convert_from('two')),
+        )
+        # Process until thread exit.
+        active_threads: set[_ModelLoaderThread] = {
+            self.main_thread,
+            self.net_thread,
+            self.disk_thread,
+        }
+        while any(not t.shutdown for t in active_threads):
+            for thread in active_threads:
+                if not thread.shutdown:
+                    try:
+                        thread.handle_msg(thread.msgq.get_msg(timeout=MAX_BLOCK_SECS))
+                    except queue.Empty:
+                        pass
+        # Verify only op two cmd on main thread msgq.
+        main_msg: typing.Any = self.main_thread.msgq.get_msg().content
+        self.assertEqual(
+            main_msg,
+            ModelCacheCmd(2, ModelKey.convert_from('two'))
+        )
+        # Verify net thread msgq and disk thread msgq both empty.
+        self.assertTrue(self.net_thread.msgq.queue.empty())
+        self.assertTrue(self.disk_thread.msgq.queue.empty())
