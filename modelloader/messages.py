@@ -43,9 +43,6 @@ MSG_HIGH_PRIORITY = 0
 _log = logging.getLogger(__name__)
 
 
-# TODO Rewrite message types using @dataclass.
-
-
 # Top level commands.
 @dataclass
 class ModelCacheCmd:
