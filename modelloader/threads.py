@@ -1017,7 +1017,7 @@ class TestMainThread(unittest.TestCase, _TestCaseThreadDataMixin):
         )
 
     def test_model_stage_cmd_when_staged(self):
-       # Mark model as staged.
+        # Mark model as staged.
         self.thread_data.stage_complete.mark_complete(self.KEY)
         # Send stage comand.
         self.thread_data.main_msgq.put_msg_from_client(
