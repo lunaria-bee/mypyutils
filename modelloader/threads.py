@@ -1271,9 +1271,9 @@ class TestNetThread(unittest.TestCase, _TestCaseThreadDataMixin, _TestCaseMockHf
             MSG_NORMAL_PRIORITY,
             msg,
         )
-        # Check disk thread msgq for ModelStageToCacheCmd.
-        msg = self.thread_data.disk_msgq.get_msg().content
-        self.assertIsInstance(msg, ModelStageToCacheCmd)
+        # Check main thread msgq for ModelCacheCompleteMsg.
+        msg = self.thread_data.main_msgq.get_msg().content
+        self.assertIsInstance(msg, ModelCacheCompleteMsg)
         # Verify that hf_hub_download was NOT called.
         hfhub.hf_hub_download.assert_not_called()
 
