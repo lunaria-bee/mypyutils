@@ -89,15 +89,8 @@ class ThreadData:
         field(default_factory=lambda: ModelLoaderMessager("disk"))
 
 
-# TODO Use `hfhub.constants.DEFAULT_REVISION` instead of hardcoding `main`.
-
 # TODO Clean up:
-#      -- `file` / `path` / `filename` naming schema (especially in test code)
-#      -- `new_msg` message passing patter (just construct directly in fn call)
 #      -- sloppy unit test code
-
-# TODO Factor common thread behavior (such as message retrieval and exit
-# handling).
 
 
 class _ModelLoaderThread[M](Thread, ABC):
@@ -633,8 +626,6 @@ class DiskThread(_ModelLoaderThread[DiskMsg]):
             _log.debug("local_paths empty, returning")
             return
 
-        # TODO Copy blob and symlink, inserting '/./' into the appropriate
-        # section of the path to ensure correct relative copy.
         match direction:
             case self._RsyncDirection.CACHE_TO_STAGE:
                 source: Path = self.thread_data.cachedir
