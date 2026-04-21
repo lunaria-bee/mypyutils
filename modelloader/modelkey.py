@@ -20,7 +20,7 @@ class ModelKey(NamedTuple):
 
     '''
 
-    revision: Union[str, None]
+    revision: str | None = None
     '''Repo revision identifying a specific model checkpoint.
 
     As passed to the ``revision`` argument of
