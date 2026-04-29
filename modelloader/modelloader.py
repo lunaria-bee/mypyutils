@@ -59,6 +59,7 @@ class ModelLoader:
             Directory in fast, volatile storage, where data will be staged.
 
         '''
+        # TODO Make cachedir optional and use HF defaults.
         # TODO Way to set default model loading kwargs.
         # TODO Way to set default tokenizer loading kwargs.
 
