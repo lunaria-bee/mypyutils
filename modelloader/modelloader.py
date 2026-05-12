@@ -1,4 +1,5 @@
 import enum
+import huggingface_hub as hfhub
 from pathlib import Path
 from threading import Event, Lock
 from transformers import AutoModel, AutoTokenizer, PreTrainedModel, PreTrainedTokenizer
@@ -49,23 +50,32 @@ class ModelLoader:
 
     # TODO unstage_on_exit option.
 
-    def __init__(self, cachedir: Path | str, stagedir: Path | str):
-        '''Constructor.
-
-        :param cachedir:
-            Directory in slow, persistent storage, where data will be cached.
-
-        :param stagedir:
+    def __init__(
+            self,
+            stage_dir: Path | str,
+            cache_dir: Optional[Path | str] = None,
+    ):
+        '''
+        :param stage_dir:
             Directory in fast, volatile storage, where data will be staged.
+
+        :param cache_dir:
+            Directory in slow, persistent storage, where data will be cached. If
+            omitted or ``None``, defaults to value of |HF_HUB_CACHE|_.
+
+        .. |HF_HUB_CACHE| replace:: ``HF_HUB_CACHE``
+        .. _HF_HUB_CACHE: https://huggingface.co/docs/datasets/cache#cache-directory
 
         '''
         # TODO Make cachedir optional and use HF defaults.
         # TODO Way to set default model loading kwargs.
         # TODO Way to set default tokenizer loading kwargs.
 
-        # Private storage for paths.
-        self._cachedir: Path = Path(cachedir)
-        self._stagedir: Path = Path(stagedir)
+        if cache_dir is None:
+            cache_dir = hfhub.constants.HF_HUB_CACHE
+
+        self._cachedir: Path = Path(cache_dir)
+        self._stagedir: Path = Path(stage_dir)
 
         # Used to determine op_id message field.
         self._next_op_id: int = 0
@@ -87,13 +97,11 @@ class ModelLoader:
         self._disk_thread.start()
 
     @property
-    def cachedir(self) -> Path:
-        '''Directory for caching.'''
+    def cache_dir(self) -> Path:
         return self._cachedir
 
     @property
-    def stagedir(self) -> Path:
-        '''Directory for staging.'''
+    def stage_dir(self) -> Path:
         return self._stagedir
 
     def cache(self, *keys: KeyLike) -> None:
