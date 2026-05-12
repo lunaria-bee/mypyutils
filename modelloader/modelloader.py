@@ -185,7 +185,7 @@ class ModelLoader:
         return model_type.from_pretrained(
             key.hf_path,
             revision=key.revision,
-            cache_dir=self.stagedir,
+            cache_dir=self._stagedir,
             device_map=device_map,
             local_files_only=True,
         )
@@ -218,7 +218,7 @@ class ModelLoader:
         return tokenizer_type.from_pretrained(
             key.hf_path,
             revision=key.revision,
-            cache_dir=self.stagedir,
+            cache_dir=self._stagedir,
             local_files_only=True,
         )
 
