@@ -170,7 +170,7 @@ models are completely safe and do not cause repeated operations.
         ('EleutherAI/pythia-160m', 'step8'),
     )
 
-    # This does nothing (or more accurately, creates a stage operation request
+    # This does nothing (or more accurately, queues a stage operation request
     # that is simply ignored).
     loader.stage(('EleutherAI/pythia-160m', 'step1'))
 
