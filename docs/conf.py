@@ -22,6 +22,7 @@ extensions = [
     'autoapi.extension',
     'sphinx_design',
     'sphinx.ext.intersphinx',
+    'sphinx_togglebutton',
 ]
 
 # autoapi.extension

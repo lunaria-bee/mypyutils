@@ -15,6 +15,10 @@ __all__ = (
 )
 
 
+# TODO In documentation, ModelKey and KeyLike should link to the module-level
+# reference, not the ones in modelloader.modelkey.
+
+
 # TODO Handle inability to make requests due to HF rate limits. Look into how
 # load_from_pretrained determines what files it needs to load for a model,
 # especially when `local_files_only=True`.
@@ -36,11 +40,8 @@ class ModelLoaderCmdAfterShutdownError(Exception):
 
 
 class ModelLoader:
-    '''Cache and stage HuggingFace models in background threads so they're ready
-    when you need them.
-
-    This is the main interface to the :mod:`modelloader` system. See module-level
-    documentation for more.
+    '''Main interface to ``modelloader``. See :ref:`module-level documentation
+    <modelloader-usage>` for more.
 
     '''
 
@@ -55,19 +56,6 @@ class ModelLoader:
             stage_dir: Path | str,
             cache_dir: Optional[Path | str] = None,
     ):
-        '''
-        :param stage_dir:
-            Directory in fast, volatile storage, where data will be staged.
-
-        :param cache_dir:
-            Directory in slow, persistent storage, where data will be cached. If
-            omitted or ``None``, defaults to value of |HF_HUB_CACHE|_.
-
-        .. |HF_HUB_CACHE| replace:: ``HF_HUB_CACHE``
-        .. _HF_HUB_CACHE: https://huggingface.co/docs/datasets/cache#cache-directory
-
-        '''
-        # TODO Make cachedir optional and use HF defaults.
         # TODO Way to set default model loading kwargs.
         # TODO Way to set default tokenizer loading kwargs.
 
@@ -97,15 +85,29 @@ class ModelLoader:
         self._disk_thread.start()
 
     @property
-    def cache_dir(self) -> Path:
-        return self._cachedir
-
-    @property
     def stage_dir(self) -> Path:
+        '''Directory in fast, volatile storage, where data will be staged.'''
         return self._stagedir
 
+    @property
+    def cache_dir(self) -> Path:
+        '''Directory in slow, persistent storage, where data will be cached.
+
+        If omitted or ``None``, defaults to the value of |HF_HUB_CACHE|_.
+
+        .. |HF_HUB_CACHE| replace:: ``HF_HUB_CACHE``
+        .. _HF_HUB_CACHE: https://huggingface.co/docs/datasets/cache#cache-directory
+
+        '''
+        return self._cachedir
+
     def cache(self, *keys: KeyLike) -> None:
-        '''Instruct loader to cache models.'''
+        '''Instruct system to cache models.
+
+        :meth:`!cache()` will return as soon as cache commands have been queued;
+        actual caching will occur in a background thread.
+
+        '''
         self._cmd_after_shutdown_check()
 
         with self._next_op_id_lock:
@@ -117,9 +119,12 @@ class ModelLoader:
                 self._next_op_id += 1
 
     def stage(self, *keys: KeyLike) -> None:
-        '''Instruct loader to stage models.
+        '''Instruct system to stage models.
 
         Any uncached models will be cached automatically.
+
+        :meth:`!stage()` will return as soon as stage commands have been queued;
+        actual staging will occur in a background thread.
 
         '''
         self._cmd_after_shutdown_check()
@@ -141,8 +146,11 @@ class ModelLoader:
     ) -> tuple[PreTrainedModel, PreTrainedTokenizer]:
         '''Load a staged model and its tokenizer.
 
-        The model will be automatically cached and staged if they have not been
+        The model will be automatically cached and staged if it has not been
         already.
+
+        If the model has not finished being staged, :meth:`!load()` will block
+        execution until staging is complete.
 
         '''
         self._cmd_after_shutdown_check()
@@ -166,6 +174,9 @@ class ModelLoader:
 
         The model will be automatically cached and staged if it has not been
         already.
+
+        If the model has not finished being staged, :meth:`!load_model()` will
+        block execution until staging is complete.
 
         '''
         self._cmd_after_shutdown_check()
@@ -199,6 +210,9 @@ class ModelLoader:
 
         The model for this tokenizer will be cached and staged if it has not
         been already.
+
+        If the model has not finished being staged, :meth:`!load_tokenizer()`
+        will block execution util staging is complete.
 
         '''
         self._cmd_after_shutdown_check()
@@ -250,8 +264,8 @@ class ModelLoader:
     ) -> None:
         '''Shut down ModelLoader system.
 
-        Once this has been called, no more cache, stage, or load commands may
-        be initiated. Attempting to do so will raise
+        Once :meth:`!shutdown()` has been called, no more cache, stage, or load
+        commands may be initiated. Attempting to do so will raise
         :class:`ModelLoaderCmdAfterShutdownError`.
 
         :param block:
@@ -279,7 +293,7 @@ class ModelLoader:
     def wait_for_shutdown(self) -> None:
         '''Block until shutdown is complete.
 
-        Does not initiate shutdown process; use :meth:``shutdown()`` for this.
+        Does not initiate shutdown process; use :meth:`shutdown()` for this.
 
         '''
         self._main_thread.join()

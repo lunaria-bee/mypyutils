@@ -125,6 +125,7 @@ class MainThread(_ModelLoaderThread[MainMsg]):
     '''Main thread execution class.
 
     The main thread:
+
     - Acts as an interface between model loader internals and client code.
     - Updates the :attr:`ThreadData.cache_complete` and
       :attr:`ThreadData.stage_complete` bookkeeping variables.

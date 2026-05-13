@@ -16,7 +16,11 @@
          {% if visible_children %}
             {% set this_page_children = visible_children|rejectattr("type", "in", own_page_types)|list %}
             {% if this_page_children %}
-{{ "-" * obj.type|length }}---------
+
+                {% if obj.docstring %}
+Contents
+--------
+                {% endif %}
 
                {% for obj_item in this_page_children %}
 {{ obj_item.render()|indent(0) }}
