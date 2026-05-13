@@ -27,7 +27,7 @@ __all__ = (
     'ModelCacheCompleteMsg',
     'ModelStageCompleteMsg',
     'ModelUnstageCompleteMsg',
-    'ThreadShutdownCmd',
+    'ModelLoaderShutdownCmd',
     'MainMsg',
     'NetMsg',
     'DiskMsg',
@@ -143,7 +143,7 @@ class ModelUnstageCompleteMsg:
 # TODO Way to kill in-progress download/rsync ops if client requests immediate
 # kill.
 @dataclass
-class ThreadShutdownCmd:
+class ModelLoaderShutdownCmd:
     '''Command thread to exit.'''
     pass
 
@@ -156,7 +156,7 @@ type MainMsg = Union[
     ModelCacheCompleteMsg,
     ModelStageCompleteMsg,
     ModelUnstageCompleteMsg,
-    ThreadShutdownCmd,
+    ModelLoaderShutdownCmd,
 ]
 '''Messages that can be received by :class:`_MainThread`..'''
 
@@ -164,7 +164,7 @@ type MainMsg = Union[
 type NetMsg = Union[
     ModelDownloadForCachingCmd,
     ModelDownloadForStagingCmd,
-    ThreadShutdownCmd,
+    ModelLoaderShutdownCmd,
 ]
 '''Messages that can be received by :class:`_NetThread`.'''
 
@@ -174,7 +174,7 @@ type DiskMsg = Union[
     ModelStageToCacheCmd,
     ModelDownloadForStagingCompleteMsg,
     ModelRmFromStageCmd,
-    ThreadShutdownCmd,
+    ModelLoaderShutdownCmd,
 ]
 '''Messages that can be received by :class:`_DiskThread`.'''
 

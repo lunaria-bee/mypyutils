@@ -263,7 +263,7 @@ class ModelLoader:
             case ModelLoaderShutdownUrgency.FINISH_OPS:
                 self._thread_data.main_msgq.put_msg_from_client(
                     MSG_NORMAL_PRIORITY,
-                    ThreadShutdownCmd(),
+                    ModelLoaderShutdownCmd(),
                 )
             case ModelLoaderShutdownUrgency.IMMEDIATE:
                 self._main_thread.shutdown = True

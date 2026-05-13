@@ -150,7 +150,7 @@ class MainThread(_ModelLoaderThread[MainMsg]):
             ModelCacheCompleteMsg: self._handle_model_cache_complete_msg,
             ModelStageCompleteMsg: self._handle_model_stage_complete_msg,
             ModelUnstageCompleteMsg: self._handle_model_unstage_complete_msg,
-            ThreadShutdownCmd: self._handle_thread_shutdown_cmd,
+            ModelLoaderShutdownCmd: self._handle_thread_shutdown_cmd,
         }[type(msg)](msg)
 
     def _handle_model_cache_cmd(self, msg: ModelCacheCmd) -> None:
@@ -271,8 +271,8 @@ class MainThread(_ModelLoaderThread[MainMsg]):
         self.thread_data.stage_complete.unmark_complete(msg.key)
         self._resolve_op(msg.op_id)
 
-    def _handle_thread_shutdown_cmd(self, _: ThreadShutdownCmd) -> None:
-        '''Handle :class:`ThreadShutdownCmd`.
+    def _handle_thread_shutdown_cmd(self, _: ModelLoaderShutdownCmd) -> None:
+        '''Handle :class:`ModelLoaderShutdownCmd`.
 
         Set :attr:`prepare_shutdown` flag. If no operations are outstanding,
         execute shutdown.
@@ -295,12 +295,12 @@ class MainThread(_ModelLoaderThread[MainMsg]):
         self.msgq.send_msg(
             self.thread_data.net_msgq,
             MSG_HIGH_PRIORITY,
-            ThreadShutdownCmd(),
+            ModelLoaderShutdownCmd(),
         )
         self.msgq.send_msg(
             self.thread_data.disk_msgq,
             MSG_HIGH_PRIORITY,
-            ThreadShutdownCmd(),
+            ModelLoaderShutdownCmd(),
         )
         self.shutdown = True
 
@@ -317,7 +317,7 @@ class NetThread(_ModelLoaderThread[NetMsg]):
         {
             ModelDownloadForCachingCmd: self._handle_model_download_for_caching_cmd,
             ModelDownloadForStagingCmd: self._handle_model_download_for_staging_cmd,
-            ThreadShutdownCmd: self._handle_thread_shutdown_cmd,
+            ModelLoaderShutdownCmd: self._handle_thread_shutdown_cmd,
         }[type(msg)](msg)
 
     def _handle_model_download_for_caching_cmd(self, msg) -> None:
@@ -359,8 +359,8 @@ class NetThread(_ModelLoaderThread[NetMsg]):
             ModelDownloadForStagingCompleteMsg(msg.op_id, msg.key, local_paths),
         )
 
-    def _handle_thread_shutdown_cmd(self, _: ThreadShutdownCmd):
-        '''Handle :class:`ThreadShutdownCmd`.'''
+    def _handle_thread_shutdown_cmd(self, _: ModelLoaderShutdownCmd):
+        '''Handle :class:`ModelLoaderShutdownCmd`.'''
         self.shutdown = True
 
     def _download(self, msg) -> list[str]:
@@ -410,7 +410,7 @@ class DiskThread(_ModelLoaderThread[DiskMsg]):
             ModelStageToCacheCmd: self._handle_model_stage_to_cache_cmd,
             ModelDownloadForStagingCompleteMsg: self._handle_model_download_for_staging_complete_msg,
             ModelUnstageCmd: self._handle_model_rm_from_stage_cmd,
-            ThreadShutdownCmd: self._handle_thread_shutdown_cmd,
+            ModelLoaderShutdownCmd: self._handle_thread_shutdown_cmd,
         }[type(msg)](msg)
 
     def _handle_model_cache_to_stage_cmd(self, msg: ModelCacheToStageCmd):
@@ -609,8 +609,8 @@ class DiskThread(_ModelLoaderThread[DiskMsg]):
             ModelUnstageCompleteMsg(msg.op_id, msg.key),
         )
 
-    def _handle_thread_shutdown_cmd(self, _: ThreadShutdownCmd):
-        '''Handle :class:`ThreadShutdownCmd`.'''
+    def _handle_thread_shutdown_cmd(self, _: ModelLoaderShutdownCmd):
+        '''Handle :class:`ModelLoaderShutdownCmd`.'''
         self.shutdown = True
 
     class _RsyncDirection(enum.Enum):
