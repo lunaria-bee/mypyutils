@@ -1,5 +1,0 @@
-pydata-sphinx-theme
-Sphinx
-sphinx-autoapi
-sphinx-design
-sphinx-togglebutton
