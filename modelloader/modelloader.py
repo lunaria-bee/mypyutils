@@ -1,5 +1,6 @@
 import enum
 import huggingface_hub as hfhub
+import logging
 from pathlib import Path
 from threading import Event, Lock
 from transformers import AutoModel, AutoTokenizer, PreTrainedModel, PreTrainedTokenizer
@@ -13,6 +14,9 @@ from .threads import ThreadData, MainThread, NetThread, DiskThread
 __all__ = (
     'ModelLoader',
 )
+
+
+_log = logging.getLogger(__name__)
 
 
 # TODO In documentation, ModelKey and KeyLike should link to the module-level
@@ -65,6 +69,11 @@ class ModelLoader:
         self._cachedir: Path = Path(cache_dir)
         self._stagedir: Path = Path(stage_dir)
 
+        _log.debug(
+            f"\n  cachedir={repr(self._cachedir)}"
+            f"\n  stagedir={repr(self._stagedir)}"
+        )
+
         # Used to determine op_id message field.
         self._next_op_id: int = 0
         self._next_op_id_lock: Lock = Lock()
@@ -108,6 +117,10 @@ class ModelLoader:
         actual caching will occur in a background thread.
 
         '''
+        _log.info("Cache {}".format(
+            ", ".join(str(k) for k in keys)
+        ))
+
         self._cmd_after_shutdown_check()
 
         with self._next_op_id_lock:
@@ -127,6 +140,10 @@ class ModelLoader:
         actual staging will occur in a background thread.
 
         '''
+        _log.info("Stage {}".format(
+            ", ".join(str(k) for k in keys)
+        ))
+
         self._cmd_after_shutdown_check()
 
         with self._next_op_id_lock:
@@ -153,6 +170,13 @@ class ModelLoader:
         execution until staging is complete.
 
         '''
+        _log.debug(
+            f"{repr(key)}"
+            f"\n  model_type={repr(model_type)}"
+            f"\n  tokenizer_type={repr(tokenizer_type)}"
+            f"\n  device_map={repr(device_map)}"
+        )
+
         self._cmd_after_shutdown_check()
 
         key = ModelKey.convert_from(key)
@@ -179,6 +203,12 @@ class ModelLoader:
         block execution until staging is complete.
 
         '''
+        _log.debug(
+            f"{repr(key)}"
+            f"\n  model_type={repr(model_type)}"
+            f"\n  device_map={repr(device_map)}"
+        )
+
         self._cmd_after_shutdown_check()
 
         key = ModelKey.convert_from(key)
@@ -215,6 +245,11 @@ class ModelLoader:
         will block execution util staging is complete.
 
         '''
+        _log.debug(
+            f"{repr(key)}"
+            f"\n  tokenizer_type={repr(tokenizer_type)}"
+        )
+
         self._cmd_after_shutdown_check()
 
         key = ModelKey.convert_from(key)
@@ -248,7 +283,10 @@ class ModelLoader:
         :meth:`_MainThread._handle_model_stage_complete_msg()` for more.
 
         '''
+        if self._thread_data.stage_complete.is_complete(key):
+            _log.debug(f"{repr(key)} already staged")
         if not self._thread_data.stage_complete.is_complete(key):
+            _log.debug(f"{repr(key)} needs stage")
             self.stage(key)
             event = Event()
             self._thread_data.main_msgq.put_msg_from_client(
@@ -256,6 +294,7 @@ class ModelLoader:
                 ModelRegisterForStageCompleteCmd(key, event),
             )
             event.wait()
+            _log.debug(f"{repr(key)} staged")
 
     def shutdown(
             self,
