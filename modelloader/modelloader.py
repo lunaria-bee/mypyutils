@@ -1,4 +1,3 @@
-import enum
 import huggingface_hub as hfhub
 from pathlib import Path
 from threading import Event, Lock
@@ -12,6 +11,8 @@ from .threads import ThreadData, MainThread, NetThread, DiskThread
 
 __all__ = (
     'ModelLoader',
+    'ModelLoaderShutdownUrgency',
+    'ModelLoaderCmdAfterShutdownError',
 )
 
 
@@ -22,15 +23,6 @@ __all__ = (
 # TODO Handle inability to make requests due to HF rate limits. Look into how
 # load_from_pretrained determines what files it needs to load for a model,
 # especially when `local_files_only=True`.
-
-
-class ModelLoaderShutdownUrgency(enum.Enum):
-    '''How urgently to shut down ModelLoader system.'''
-    FINISH_OPS = enum.auto()
-    '''Allow cache/stage/load operations that were queued before shutdown to
-    complete.'''
-    IMMEDIATE = enum.auto()
-    '''Shut down without allowing previously-queued operations to complete.'''
 
 
 class ModelLoaderCmdAfterShutdownError(Exception):
@@ -68,10 +60,6 @@ class ModelLoader:
         # Used to determine op_id message field.
         self._next_op_id: int = 0
         self._next_op_id_lock: Lock = Lock()
-
-        # Used to check for shutdown state.
-        self._shutdown: bool
-        self._shutdown_lock: Lock = Lock()
 
         # Threads and associated data.
         self._thread_data: ThreadData = \
@@ -259,7 +247,7 @@ class ModelLoader:
 
     def shutdown(
             self,
-            exit_urgency: ModelLoaderShutdownUrgency,
+            urgency: ModelLoaderShutdownUrgency,
             block: bool = False,
     ) -> None:
         '''Shut down ModelLoader system.
@@ -273,19 +261,20 @@ class ModelLoader:
             soon as shutdown is queued.
 
         '''
-        match exit_urgency:
-            case ModelLoaderShutdownUrgency.FINISH_OPS:
-                self._thread_data.main_msgq.put_msg_from_client(
-                    MSG_NORMAL_PRIORITY,
-                    ModelLoaderShutdownCmd(),
-                )
-            case ModelLoaderShutdownUrgency.IMMEDIATE:
-                self._main_thread.shutdown = True
-                self._net_thread.shutdown = True
-                self._disk_thread.shutdown = True
+        priority: int
+        match urgency:
+            case ModelLoaderShutdownUrgency.FINISH_QUEUED_OPS:
+                priority = MSG_NORMAL_PRIORITY
+            case (
+                    ModelLoaderShutdownUrgency.FINISH_CURRENT_OPS
+                    | ModelLoaderShutdownUrgency.IMMEDIATE
+            ):
+                priority = MSG_HIGH_PRIORITY
 
-        with self._shutdown_lock:
-            self._shutdown = True
+        self._thread_data.main_msgq.put_msg_from_client(
+            priority,
+            ModelLoaderShutdownCmd(urgency),
+        )
 
         if block:
             self.wait_for_shutdown()
@@ -301,8 +290,7 @@ class ModelLoader:
         self._disk_thread.join()
 
     def _cmd_after_shutdown_check(self, msg: Optional[str] = None) -> None:
-        with self._shutdown_lock:
-            if self._shutdown:
-                raise ModelLoaderCmdAfterShutdownError(msg)
+        if self._thread_data.shutdown.is_set():
+            raise ModelLoaderCmdAfterShutdownError(msg)
 
     # TODO unstage

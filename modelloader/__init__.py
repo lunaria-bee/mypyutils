@@ -213,10 +213,16 @@ internal documentation in ``modelloader/threads.py``.
 '''
 
 from .modelkey import ModelKey, KeyLike
-from .modelloader import ModelLoader
+from .modelloader import (
+    ModelLoader,
+    ModelLoaderShutdownUrgency,
+    ModelLoaderCmdAfterShutdownError,
+)
 
 __all__ = (
     'ModelLoader',
     'ModelKey',
     'KeyLike',
+    'ModelLoaderShutdownUrgency',
+    'ModelLoaderCmdAfterShutdownError',
 )

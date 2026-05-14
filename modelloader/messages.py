@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass
+import enum
 import functools
 import logging
 from queue import PriorityQueue
@@ -27,6 +28,7 @@ __all__ = (
     'ModelCacheCompleteMsg',
     'ModelStageCompleteMsg',
     'ModelUnstageCompleteMsg',
+    'ModelLoaderShutdownUrgency',
     'ModelLoaderShutdownCmd',
     'MainMsg',
     'NetMsg',
@@ -139,13 +141,36 @@ class ModelUnstageCompleteMsg:
     op_id: int
     key: ModelKey
 
+
 # Shutdown command.
+class ModelLoaderShutdownUrgency(enum.Enum):
+    '''How urgently to shut down ModelLoader system.'''
+
+    FINISH_QUEUED_OPS = enum.auto()
+    '''Allow cache/stage/load operations that were queued before shutdown to
+    complete.'''
+
+    FINISH_CURRENT_OPS = enum.auto()
+    '''Allow cache/stage/load operations that were initiated before shutdown to
+    complete.'''
+
+    IMMEDIATE = enum.auto()
+    '''Shut down with no concern for whether any cache/stage/load operations are
+    able to complete.
+
+    ModelLoader will send ``SIGTERM`` to any ongoing rsync processes, but
+    currently has no way to interrupt ongoing HuggingFace Hub downloads, so the
+    results of this option may not be as immediate as you expect.
+
+    '''
+
+
 # TODO Way to kill in-progress download/rsync ops if client requests immediate
 # kill.
 @dataclass
 class ModelLoaderShutdownCmd:
     '''Command thread to exit.'''
-    pass
+    urgency: ModelLoaderShutdownUrgency
 
 
 type MainMsg = Union[
