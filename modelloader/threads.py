@@ -480,6 +480,10 @@ class DiskThread(_ModelLoaderThread[DiskMsg]):
             )
 
         if local_paths_for_stage:
+            ref_path: str = self._ref_path(msg.key)
+            if os.path.exists(ref_path):
+                local_paths_for_stage.append(ref_path)
+
             # Stage files that are already cached.
             _log.debug(f"staging {local_paths_for_stage}")
             self._rsync(local_paths_for_stage, self._RsyncDirection.CACHE_TO_STAGE)
@@ -706,6 +710,22 @@ class DiskThread(_ModelLoaderThread[DiskMsg]):
         _log.debug(f"rsync output:\n{rsync_result.stdout.decode('utf8')}")
 
         return rsync_result
+
+    def _ref_path(self, key: ModelKey) -> str:
+        repo_folder_name: str = hfhub.file_download.repo_folder_name(
+            repo_id=key.hf_path,
+            repo_type='model',
+        )
+        return os.path.join(
+            self.thread_data.cachedir,
+            repo_folder_name,
+            'refs',
+            key.revision or hfhub.constants.DEFAULT_REVISION,
+        )
+
+        storage_dir: str = \
+            os.path.join(self.thread_data.cache_dir, repo_folder_name)
+        return
 
 
 import unittest, unittest.mock
