@@ -634,13 +634,15 @@ class DiskThread(_ModelLoaderThread[DiskMsg]):
             _log.debug("local_paths empty, returning")
             return
 
+        source: Path
+        dest: Path
         match direction:
             case self._RsyncDirection.CACHE_TO_STAGE:
-                source: Path = self.thread_data.cachedir
-                dest: Path = self.thread_data.stagedir
+                source = self.thread_data.cachedir
+                dest = self.thread_data.stagedir
             case self._RsyncDirection.STAGE_TO_CACHE:
-                source: Path = self.thread_data.stagedir
-                dest: Path = self.thread_data.cachedir
+                source = self.thread_data.stagedir
+                dest = self.thread_data.cachedir
 
         # Build a list of paths to copy, symlinks, targets, and intermediary links.
         paths_to_process: list[Path] = [Path(p) for p in local_paths]
