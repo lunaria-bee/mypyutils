@@ -83,11 +83,15 @@ class ModelLoader:
         self._shutdown_lock: Lock = Lock()
 
         # Threads and associated data.
+        # TODO Number threads when more than one ModelLoader is present.
         self._thread_data: ThreadData = \
             ThreadData(self._cachedir, self._stagedir)
-        self._main_thread: MainThread = MainThread(self._thread_data)
-        self._net_thread: NetThread = NetThread(self._thread_data)
-        self._disk_thread: DiskThread = DiskThread(self._thread_data)
+        self._main_thread: MainThread = \
+            MainThread(self._thread_data, name="ModelLoader:DispatchThread")
+        self._net_thread: NetThread = \
+            NetThread(self._thread_data, name="ModelLoader:NetThread")
+        self._disk_thread: DiskThread = \
+            DiskThread(self._thread_data, name="ModelLoader:DiskThread")
 
         self._main_thread.start()
         self._net_thread.start()

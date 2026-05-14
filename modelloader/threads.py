@@ -96,8 +96,8 @@ class ThreadData:
 class _ModelLoaderThread[M](Thread, ABC):
     '''TODO'''
 
-    def __init__(self, thread_data: ThreadData):
-        super().__init__()
+    def __init__(self, thread_data: ThreadData, *args, **kwargs):
+        super().__init__(*args, **kwargs)
         self.thread_data: ThreadData = thread_data
         self.shutdown: bool = False
 
@@ -132,8 +132,8 @@ class MainThread(_ModelLoaderThread[MainMsg]):
 
     '''
 
-    def __init__(self, thread_data: ThreadData):
-        super().__init__(thread_data)
+    def __init__(self, thread_data: ThreadData, *args, **kwargs):
+        super().__init__(thread_data, *args, **kwargs)
         self.outstanding_ops: set[int] = set()
         self.stage_complete_registry: dict[ModelKey, list[Event]] = dict()
         self.prepare_shutdown: bool = False
