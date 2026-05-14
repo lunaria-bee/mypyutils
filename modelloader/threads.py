@@ -163,13 +163,15 @@ class MainThread(_ModelLoaderThread[MainMsg]):
 
         '''
         if self.thread_data.cache_complete.is_complete(msg.key):
-            _log.debug(f"{msg.key} cached: do nothing")
+            _log.info(f"{msg.key} cached: do nothing")
         elif self.prepare_shutdown:
             _log.error(
                 f"Received {repr(msg)} while preparing to exit: "
                 f"do nothing"
             )
         else:
+            if msg.op_id >= 0:
+                _log.info(f"Begin cache {msg.key} (op {msg.op_id})")
             self.msgq.send_msg(
                 self.thread_data.net_msgq,
                 MSG_NORMAL_PRIORITY,
@@ -185,13 +187,15 @@ class MainThread(_ModelLoaderThread[MainMsg]):
 
         '''
         if self.thread_data.stage_complete.is_complete(msg.key):
-            _log.debug(f"{msg.key} staged: do nothing")
+            _log.info(f"{msg.key} staged: do nothing")
         elif self.prepare_shutdown:
             _log.error(
                 f"Received {repr(msg)} while preparing to exit: "
                 f"do nothing"
             )
         else:
+            if msg.op_id >= 0:
+                _log.info(f"Begin stage {msg.key} (op {msg.op_id})")
             self.msgq.send_msg(
                 self.thread_data.disk_msgq,
                 MSG_NORMAL_PRIORITY,
@@ -238,7 +242,11 @@ class MainThread(_ModelLoaderThread[MainMsg]):
         :attr:`~ThreadData.cache_complete`.
 
         '''
+        if msg.op_id >= 0:
+            _log.info(f"End cache {msg.key} (op {msg.op_id})")
+
         self.thread_data.cache_complete.mark_complete(msg.key)
+
         self._resolve_op(msg.op_id)
 
     def _handle_model_stage_complete_msg(self, msg: ModelStageCompleteMsg) -> None:
@@ -252,6 +260,9 @@ class MainThread(_ModelLoaderThread[MainMsg]):
         .. _msg.key: ModelStageCompleteMsg.key
 
         '''
+        if msg.op_id >= 0:
+            _log.info(f"End stage {msg.key} (op {msg.op_id})")
+
         self.thread_data.stage_complete.mark_complete(msg.key)
 
         # Notify registered events.
@@ -373,6 +384,8 @@ class NetThread(_ModelLoaderThread[NetMsg]):
 
     def _download(self, msg) -> list[str]:
         '''TODO'''
+        _log.info(f"Begin download {msg.key} (op {msg.op_id})")
+
         if msg.filenames is not None:
             # Download files specified in message.
             files_to_dl: set[str] = set(msg.filenames)
@@ -400,6 +413,8 @@ class NetThread(_ModelLoaderThread[NetMsg]):
                 filename=filename,
             ) for filename in files_to_dl
         ]
+
+        _log.info(f"End download {msg.key} (op {msg.op_id})")
 
         return local_paths
 
@@ -497,6 +512,8 @@ class DiskThread(_ModelLoaderThread[DiskMsg]):
                 ModelStageCompleteMsg(msg.op_id, msg.key),
             )
 
+        _log.info(f"End cache-to-stage {msg.key} (op {msg.op_id})")
+
     def _handle_model_stage_to_cache_cmd(self, msg: ModelStageToCacheCmd):
         '''Handle :class:`ModelStageToCacheCmd`.
 
@@ -505,6 +522,8 @@ class DiskThread(_ModelLoaderThread[DiskMsg]):
         :class:`MainThread`.
 
         '''
+        _log.info(f"Begin stage-to-cache {msg.key} (op {msg.op_id})")
+
         if msg.local_paths is not None:
             # Copy files specified in message.
             local_paths: set[str] = set(msg.local_paths)
@@ -530,6 +549,8 @@ class DiskThread(_ModelLoaderThread[DiskMsg]):
             MSG_HIGH_PRIORITY,
             ModelCacheCompleteMsg(msg.op_id, msg.key),
         )
+
+        _log.info(f"End stage-to-cache {msg.key} (op {msg.op_id})")
 
     def _handle_model_download_for_staging_complete_msg(
             self,
