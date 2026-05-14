@@ -453,6 +453,8 @@ class DiskThread(_ModelLoaderThread[DiskMsg]):
         :class:`ModelStageCompleteMsg` to :class:`MainThread`.
 
         '''
+        # TODO Check thread_data.stage_complete and exit early on True.
+
         # TODO Handle msg.filenames?
         _log.info(f"Begin cache-to-stage {msg.key} (op {msg.op_id})")
 
@@ -522,6 +524,8 @@ class DiskThread(_ModelLoaderThread[DiskMsg]):
         :class:`MainThread`.
 
         '''
+        # TODO Check thread_data.cache_complete and exit early on True.
+
         _log.info(f"Begin stage-to-cache {msg.key} (op {msg.op_id})")
 
         if msg.local_paths is not None:
