@@ -43,6 +43,10 @@ MSG_HIGH_PRIORITY = 0
 _log = logging.getLogger(__name__)
 
 
+# TODO Either document that negative op_ids are ignored or switch them to
+# Optional.
+
+
 # Top level commands.
 @dataclass
 class ModelCacheCmd:

@@ -284,10 +284,16 @@ class MainThread(_ModelLoaderThread[MainMsg]):
             self._do_shutdown()
 
     def _init_op(self, op_id: int):
-        self.outstanding_ops.add(op_id)
+        _log.debug(f"op_id={op_id}")
+        if op_id >= 0:
+            self.outstanding_ops.add(op_id)
+        _log.debug(f"outstanding_ops={repr(self.outstanding_ops)}")
 
     def _resolve_op(self, op_id: int):
-        self.outstanding_ops.remove(op_id)
+        _log.debug(f"op_id={op_id}")
+        if op_id >= 0:
+            self.outstanding_ops.remove(op_id)
+        _log.debug(f"outstanding_ops={repr(self.outstanding_ops)}")
 
         if self.prepare_shutdown and not self.outstanding_ops:
             self._do_shutdown()
@@ -554,7 +560,7 @@ class DiskThread(_ModelLoaderThread[DiskMsg]):
         self.msgq.send_msg(
             self.msgq,
             MSG_HIGH_PRIORITY,
-            ModelStageToCacheCmd(msg.op_id, msg.key, msg.local_paths),
+            ModelStageToCacheCmd(-1, msg.key, msg.local_paths),
         )
 
     def _handle_model_rm_from_stage_cmd(self, msg: ModelRmFromStageCmd):
