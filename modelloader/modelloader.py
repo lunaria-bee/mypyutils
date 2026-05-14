@@ -79,7 +79,7 @@ class ModelLoader:
         self._next_op_id_lock: Lock = Lock()
 
         # Used to check for shutdown state.
-        self._shutdown: bool
+        self._shutdown: bool = False
         self._shutdown_lock: Lock = Lock()
 
         # Threads and associated data.
