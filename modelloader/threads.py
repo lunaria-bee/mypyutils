@@ -113,11 +113,12 @@ class _ModelLoaderThread[M](Thread, ABC):
     def run(self):
         while not self.shutdown:
             try:
-                self.handle_msg(self.msgq.get_msg(timeout=MAX_BLOCK_SECS))
+                wrapped_msg: ModelLoaderMsgWrapper[M] = \
+                    self.msgq.get_msg(timeout=MAX_BLOCK_SECS)
             except queue.Empty:
-                # We don't actually do anything here, the timeout is just to
-                # make sure self.shutdown gets rechecked.
-                pass
+                pass # Recheck shutdown.
+            else:
+                self.handle_msg(wrapped_msg)
 
 
 # TODO Rename: `MainThread` is also the name/type for Python's default thread.
