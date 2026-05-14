@@ -1711,7 +1711,7 @@ class TestIntegratedThreads(unittest.TestCase, _TestCaseThreadDataMixin, _TestCa
         self.tear_down_thread_data()
         self.tear_down_hf_hub_patchers()
 
-    def test_thread_shutdown_cmd(self):
+    def test_shutdown_cmd(self):
         # Queue op commands.
         for op_id, key in [(0, 'zero'), (1, 'one')]:
             self.thread_data.main_msgq.put_msg_from_client(
@@ -1724,7 +1724,7 @@ class TestIntegratedThreads(unittest.TestCase, _TestCaseThreadDataMixin, _TestCa
         # Queue exit command.
         self.thread_data.main_msgq.put_msg_from_client(
             MSG_NORMAL_PRIORITY,
-            ThreadShutdownCmd(),
+            ModelLoaderShutdownCmd(),
         )
         # Queue follow-up command.
         self.thread_data.main_msgq.put_msg_from_client(
