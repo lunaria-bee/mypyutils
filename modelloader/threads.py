@@ -439,20 +439,36 @@ class DiskThread(_ModelLoaderThread[DiskMsg]):
 
         '''
         # TODO Handle msg.filenames?
+        _log.info(f"Begin cache-to-stage {msg.key} (op {msg.op_id})")
 
+        file_infos: list[hfhub.DryRunFileInfos] = hfhub.snapshot_download(
+            repo_id=msg.key.hf_path,
+            repo_type='model',
+            revision=msg.key.revision,
+            cache_dir=self.thread_data.cachedir,
+            dry_run=True,
+        )
         filenames_for_dl: list[str] = []
         local_paths_for_stage: list[str] = []
-        for f in hfhub.snapshot_download(
-                repo_id=msg.key.hf_path,
-                repo_type='model',
-                revision=msg.key.revision,
-                cache_dir=self.thread_data.cachedir,
-                dry_run=True,
-        ):
-            if f.will_download:
+        for f in file_infos:
+            if f.will_download or not os.path.exists(f.local_path):
                 filenames_for_dl.append(f.filename)
             else:
                 local_paths_for_stage.append(f.local_path)
+
+        # Sanity check: All files for stage exist in cache.
+        missing_stage_paths: list[str] = [
+            p for p in local_paths_for_stage
+            if not os.path.exists(p)
+        ]
+        if missing_stage_paths:
+            raise RuntimeError(
+                f"Attempting to stage missing files "
+                f"{', '.join(repr(p) for p in local_paths_for_stage)}"
+                f"\nfilenames_for_dl={repr(filenames_for_dl)}"
+                f"\nlocal_paths_for_stage={repr(local_paths_for_stage)}"
+                f"\nfile_infos={repr(file_infos)}"
+            )
 
         if filenames_for_dl:
             # Tell net thread to download missing/dirty files and report back
