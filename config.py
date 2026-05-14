@@ -1,5 +1,10 @@
 '''Tools for making config classes.
 
+.. deprecated:: v0.1.0
+
+    This is just a very silly :obj:`~dataclasses.dataclass`, a Python feature
+    I did not know about when I originally wrote this >_<
+
 Config classes have special config field members that are handled differently
 from other class members. This allows defining easily updatable and serializable
 config objects.
