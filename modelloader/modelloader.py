@@ -1,7 +1,10 @@
+from __future__ import annotations
+
 import enum
 import huggingface_hub as hfhub
 import logging
 from pathlib import Path
+import threading
 from threading import Event, Lock
 from transformers import AutoModel, AutoTokenizer, PreTrainedModel, PreTrainedTokenizer
 from typing import Optional
@@ -55,10 +58,15 @@ class ModelLoader:
 
     # TODO unstage_on_exit option.
 
+    _excepthook_set: bool = False
+    _excepthook_modelloader_registry: list[ModelLoader] = []
+
     def __init__(
             self,
             stage_dir: Path | str,
             cache_dir: Optional[Path | str] = None,
+            *,
+            excepthook: bool = False,
     ):
         # TODO Way to set default model loading kwargs.
         # TODO Way to set default tokenizer loading kwargs.
@@ -66,8 +74,8 @@ class ModelLoader:
         if cache_dir is None:
             cache_dir = hfhub.constants.HF_HUB_CACHE
 
-        self._cachedir: Path = Path(cache_dir)
-        self._stagedir: Path = Path(stage_dir)
+        self._cachedir: Path = Path(cache_dir).resolve()
+        self._stagedir: Path = Path(stage_dir).resolve()
 
         _log.debug(
             f"\n  cachedir={repr(self._cachedir)}"
@@ -81,6 +89,19 @@ class ModelLoader:
         # Used to check for shutdown state.
         self._shutdown: bool = False
         self._shutdown_lock: Lock = Lock()
+
+        # Set up thread excepthook, if applicable.
+        if excepthook:
+            if not self._excepthook_set:
+                def __modelloader_excepthook(args):
+                    _log.error(f"Exception in {args.thread.name}")
+                    for loader in self._excepthook_modelloader_registry:
+                        # Send shutdown command to all modelloader threads.
+                        loader.shutdown(ModelLoaderShutdownUrgency.IMMEDIATE)
+                    raise args.exc_value
+                threading.excepthook = __modelloader_excepthook
+
+            self._excepthook_modelloader_registry.append(self)
 
         # Threads and associated data.
         # TODO Number threads when more than one ModelLoader is present.
