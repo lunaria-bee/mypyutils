@@ -93,6 +93,8 @@ class ThreadData:
 # TODO Clean up:
 #      -- sloppy unit test code
 
+# TODO Make NetThread and DiskThread daemon children of DispatchThread.
+
 
 class _ModelLoaderThread[M](Thread, ABC):
     '''TODO'''
