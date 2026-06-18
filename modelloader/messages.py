@@ -206,12 +206,25 @@ type DiskMsg = Union[
 
 @functools.total_ordering
 class ModelLoaderMsgWrapper[T](NamedTuple):
-    '''TODO'''
+    '''Wrapper containing a modelloader message and metadata about that
+    message.'''
+
     priority: int
+    '''Message priority. Smaller numbers indicate higher priority.'''
+
     count: int
+    '''How many messages, including this one, have been sent to the destination
+    queue. This ensures that messages with the same priority are handled in the
+    same order as which they were sent.'''
+
     source: str
+    '''Name of the thread that sent the message.'''
+
     dest: str
+    '''Name of the thread receiving the message.'''
+
     content: T
+    '''Actual message object.'''
 
     def __eq__[U](self, other: ModelLoaderMsgWrapper[U]) -> bool:
         return (self.priority, self.count).__eq__((other.priority, other.count))
@@ -221,7 +234,8 @@ class ModelLoaderMsgWrapper[T](NamedTuple):
 
 
 class ModelLoaderMessager[T]:
-    '''TODO'''
+    '''Utility class for sending and receiving messages in the modelloader
+    system.'''
 
     def __init__(self, name: str):
         self.queue: PriorityQueue[ModelLoaderMsgWrapper[T]] = PriorityQueue()
@@ -237,6 +251,20 @@ class ModelLoaderMessager[T]:
             *args,
             **kwargs,
     ):
+        '''Send a message to ``dest``.
+
+        :param dest:
+            Destination message queue.
+
+        :param priority:
+            Message priority. Smaller numbers indicate higher priority.
+
+        :param content:
+            Actual message object.
+
+        Any ``*args`` and/or ``**kwargs`` will be passed to :meth:`Queue.put()`.
+
+        '''
         dest._put_msg(priority, self.name, content, *args, **kwargs)
 
     def put_msg_from_client(
@@ -255,7 +283,7 @@ class ModelLoaderMessager[T]:
         :attr:`ModelLoaderMsgWrapper.source` will be the name of the client
         thread.
 
-        Any ``*args`` and/or ``**kwargs`` will be passed to `Queue.put()`.
+        Any ``*args`` and/or ``**kwargs`` will be passed to :meth:`Queue.put()`.
 
         '''
         self._put_msg(

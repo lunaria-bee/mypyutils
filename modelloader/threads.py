@@ -31,7 +31,7 @@ MAX_BLOCK_SECS: float = 0.5
 
 
 class CompletionTracker:
-    '''TODO'''
+    '''Thread-safe manager for tracking per-model task completion.'''
 
     def __init__(self):
         self._complete: set[ModelKey] = set()
@@ -97,8 +97,6 @@ class ThreadData:
 
 
 class _ModelLoaderThread[M](Thread, ABC):
-    '''TODO'''
-
     def __init__(self, thread_data: ThreadData):
         super().__init__()
         self.thread_data: ThreadData = thread_data
@@ -316,7 +314,7 @@ class MainThread(_ModelLoaderThread[MainMsg]):
 
 
 class NetThread(_ModelLoaderThread[NetMsg]):
-    '''TODO'''
+    '''Thread that handles modelloader network operations.'''
 
     @property
     def msgq(self) -> ModelLoaderMessager[NetMsg]:
@@ -374,7 +372,7 @@ class NetThread(_ModelLoaderThread[NetMsg]):
         pass # TODO Delete: Thread shutdown is handled by main thread only.
 
     def _download(self, msg) -> list[str]:
-        '''TODO'''
+        '''Download files required to handle ``msg`` from HuggingFace hub.'''
         if msg.filenames is not None:
             # Download files specified in message.
             files_to_dl: set[str] = set(msg.filenames)
@@ -407,7 +405,7 @@ class NetThread(_ModelLoaderThread[NetMsg]):
 
 
 class DiskThread(_ModelLoaderThread[DiskMsg]):
-    '''TODO'''
+    '''Thread that handles modelloader disk operations.'''
 
     @property
     def msgq(self) -> ModelLoaderMessager[DiskMsg]:

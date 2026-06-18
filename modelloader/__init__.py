@@ -1,6 +1,8 @@
 r'''Tooling to cache and stage HuggingFace models in background threads so
 they're ready when you need them.
 
+.. _modelloader-intro:
+
 ----------------------------------------------------------------
 Introduction
 ----------------------------------------------------------------

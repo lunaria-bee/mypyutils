@@ -33,7 +33,7 @@ class ModelLoaderCmdAfterShutdownError(Exception):
 
 class ModelLoader:
     '''Main interface to ``modelloader``. See :ref:`module-level documentation
-    <modelloader-usage>` for more.
+    <modelloader-intro>` for more.
 
     '''
 
@@ -48,6 +48,14 @@ class ModelLoader:
             stage_dir: Path | str,
             cache_dir: Optional[Path | str] = None,
     ):
+        ''':param stage_dir: Stage directory; see :ref:`module-level
+        documentation <modelloader-intro>` for more.
+
+        :param cache_dir: Cache directory, defaults to
+        :const:`huggingface_hub.constants.HF_HUB_CACHE`; see :ref:`module-level
+        documentation <modelloader-intro>` for more.
+
+        '''
         # TODO Way to set default model loading kwargs.
         # TODO Way to set default tokenizer loading kwargs.
 
