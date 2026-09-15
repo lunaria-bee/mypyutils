@@ -62,7 +62,7 @@ The main interface to ``modelloader`` is :class:`ModelLoader`.
 
 .. danger::
 
-    Using the same cache and/or stage directories between two different
+    Using the same cache and/or stage directories between two concurrent
     instances of :class:`ModelLoader` is not supported, and the effects of doing
     so are undefined: It honestly could work fine, but I make no guarantees.
 
