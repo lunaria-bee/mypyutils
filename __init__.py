@@ -7,3 +7,9 @@
 # TODO Replace requirements.txt with pyproject.toml.
 
 from . import modelloader
+from . import timer
+
+__all__ = (
+    'modelloader',
+    'timer',
+)
