@@ -673,7 +673,7 @@ class DiskThread(_ModelLoaderThread[DiskMsg]):
             self,
             local_paths: Collection[str],
             direction: _RsyncDirection,
-    ) -> subprocess.Popen | None:
+    ) -> subprocess.CompletedProcess | None:
         if not local_paths:
             _log.debug("local_paths empty, returning")
             return
@@ -726,31 +726,37 @@ class DiskThread(_ModelLoaderThread[DiskMsg]):
         ]
         _log.debug(f"rsync command: {repr(rsync_cmd)}")
 
-        rsync_proc = subprocess.Popen(
+        with subprocess.Popen(
             rsync_cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
-        )
+        ) as rsync_proc:
+            # Wait for either process completion or shutdown event.
+            # TODO Decide how to handle open stdout file stream. Definitely happens
+            # when running TestDiskThread.test_rsync_sigterm_on_shutdown(); does it
+            # happen with normal exit?
+            while rsync_proc.poll() is None:
+                if self.thread_data.shutdown.is_set():
+                    _log.info("Shutdown detected, sending SIGTERM to rsync process")
+                    rsync_proc.terminate()
+                    rsync_proc.wait()
+                else:
+                    try:
+                        rsync_proc.wait(MAX_BLOCK_SECS)
+                    except subprocess.TimeoutExpired:
+                        pass
 
-        # Wait for either process completion or shutdown event.
-        # TODO Decide how to handle open stdout file stream. Definitely happens
-        # when running TestDiskThread.test_rsync_sigterm_on_shutdown(); does it
-        # happen with normal exit?
-        while rsync_proc.poll() is None:
-            if self.thread_data.shutdown.is_set():
-                _log.info("Shutdown detected, sending SIGTERM to rsync process")
-                rsync_proc.terminate()
-                rsync_proc.wait()
-            else:
-                try:
-                    rsync_proc.wait(MAX_BLOCK_SECS)
-                except subprocess.TimeoutExpired:
-                    pass
+            assert rsync_proc.stdout is not None # type narrowing
+            rsync_stdout: str = rsync_proc.stdout.read()
+            _log.debug(f"rsync output:\n{rsync_stdout}")
+            rsync_proc.stdout.close()
 
-        _log.debug(f"rsync output:\n{rsync_proc.stdout}")
-
-        return rsync_proc
+            return subprocess.CompletedProcess(
+                args=rsync_proc.args,
+                returncode=rsync_proc.returncode,
+                stdout=rsync_stdout,
+            )
 
     def _ref_path(self, key: ModelKey) -> str:
         repo_folder_name: str = hfhub.file_download.repo_folder_name(
