@@ -11,7 +11,7 @@ from typing import Optional
 
 from .messages import *
 from .modelkey import KeyLike, ModelKey
-from .threads import ThreadData, MainThread, NetThread, DiskThread
+from .threads import DispatchThread, ThreadData, NetThread, DiskThread
 
 
 __all__ = (
@@ -108,8 +108,8 @@ class ModelLoader:
         # TODO Number threads when more than one ModelLoader is present.
         self._thread_data: ThreadData = \
             ThreadData(self._cachedir, self._stagedir)
-        self._main_thread: MainThread = \
-            MainThread(self._thread_data, name="ModelLoader:DispatchThread")
+        self._main_thread: DispatchThread = \
+            DispatchThread(self._thread_data, name="ModelLoader:DispatchThread")
         self._net_thread: NetThread = \
             NetThread(self._thread_data, name="ModelLoader:NetThread")
         self._disk_thread: DiskThread = \
@@ -305,8 +305,8 @@ class ModelLoader:
         If model is not already staged, queue a stage command on the main
         thread, register a stage complete event, and then wait for the event to
         be set. See
-        :meth:`_MainThread._handle_model_register_for_stage_complete_cmd()` and
-        :meth:`_MainThread._handle_model_stage_complete_msg()` for more.
+        :meth:`_DispatchThread._handle_model_register_for_stage_complete_cmd()`
+        and :meth:`_DispatchThread._handle_model_stage_complete_msg()` for more.
 
         '''
         if self._thread_data.stage_complete.is_complete(key):

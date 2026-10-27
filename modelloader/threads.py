@@ -18,7 +18,7 @@ __all__ = (
     'MAX_BLOCK_SECS',
     'CompletionTracker',
     'ThreadData',
-    'MainThread',
+    'DispatchThread',
     'NetThread',
     'DiskThread',
 )
@@ -81,7 +81,7 @@ class ThreadData:
         field(default_factory=CompletionTracker)
     stage_complete: CompletionTracker = \
         field(default_factory=CompletionTracker)
-    main_msgq: ModelLoaderMessager[MainMsg] = \
+    main_msgq: ModelLoaderMessager[DispatchMsg] = \
         field(default_factory=lambda: ModelLoaderMessager("main"))
     net_msgq: ModelLoaderMessager[NetMsg] = \
         field(default_factory=lambda: ModelLoaderMessager("net"))
@@ -125,9 +125,9 @@ class _ModelLoaderThread[M](Thread, ABC):
                 self.handle_msg(wrapped_msg)
 
 
-# TODO Rename: `MainThread` is also the name/type for Python's default thread.
-class MainThread(_ModelLoaderThread[MainMsg]):
-    '''Main thread execution class.
+class DispatchThread(_ModelLoaderThread[DispatchMsg]):
+    '''Thread that receives client commands and dispatches :class:`NetThread`
+    and :class:`DiskThread` accordingly.
 
     The main thread:
 
@@ -144,11 +144,11 @@ class MainThread(_ModelLoaderThread[MainMsg]):
         self.prepare_shutdown: bool = False
 
     @property
-    def msgq(self) -> ModelLoaderMessager[MainMsg]:
+    def msgq(self) -> ModelLoaderMessager[DispatchMsg]:
         return self.thread_data.main_msgq
 
-    def handle_msg(self, msg_wrapper: ModelLoaderMsgWrapper[MainMsg]) -> None:
-        msg: MainMsg = msg_wrapper.content
+    def handle_msg(self, msg_wrapper: ModelLoaderMsgWrapper[DispatchMsg]) -> None:
+        msg: DispatchMsg = msg_wrapper.content
         {
             ModelCacheCmd: self._handle_model_cache_cmd,
             ModelStageCmd: self._handle_model_stage_cmd,
@@ -215,7 +215,7 @@ class MainThread(_ModelLoaderThread[MainMsg]):
 
         If model is staged, immediately :meth:`~threading.Event.set()`
         :attr:`msg.event`. If model is not staged, register :attr:`msg.event` to
-        be set once :class:`MainThread` receives the relevant
+        be set once :class:`DispatchThread` receives the relevant
         :class:`ModelStageCompleteMsg`.
 
         .. _msg.event: ModelRegisterForStageCompleteCmd.event
@@ -259,7 +259,7 @@ class MainThread(_ModelLoaderThread[MainMsg]):
         Mark :attr:`msg.key` in :attr:`~ThreadData.stage_complete`, then
         :meth:`~threading.Event.set()` all :class:`~threading.Event`s that are
         registered to :attr:`msg.key` in
-        :attr:`~MainThread.stage_complete_registry`.
+        :attr:`~DispatchThread.stage_complete_registry`.
 
         .. _msg.key: ModelStageCompleteMsg.key
 
@@ -356,7 +356,7 @@ class NetThread(_ModelLoaderThread[NetMsg]):
         Download any missing or dirty files from HuggingFace to stage. If files
         were downloaded, send :class:`ModelStageToCacheCmd` to
         :class:`DiskThread`. If files were not downloaded, model is already
-        cached, send :class:`ModelCacheCompleteMsg` to :class:`MainThread`.
+        cached, send :class:`ModelCacheCompleteMsg` to :class:`DispatchThread`.
 
         '''
         local_paths: list[str] = self._download(msg)
@@ -461,7 +461,7 @@ class DiskThread(_ModelLoaderThread[DiskMsg]):
         :class:`ModelDownloadForStagingCompleteMsg` from :class:`NetThread`.
 
         If no files need to be downloaded, stage all files and then send
-        :class:`ModelStageCompleteMsg` to :class:`MainThread`.
+        :class:`ModelStageCompleteMsg` to :class:`DispatchThread`.
 
         '''
         # TODO Check thread_data.stage_complete and exit early on True.
@@ -532,7 +532,7 @@ class DiskThread(_ModelLoaderThread[DiskMsg]):
 
         Copy all files for :attr:`msg.key <ModelStageToCacheCmd.key>` from stage
         to cache and then send :class:`ModelCacheCompleteMsg` to
-        :class:`MainThread`.
+        :class:`DispatchThread`.
 
         '''
         # TODO Check thread_data.cache_complete and exit early on True.
@@ -576,7 +576,7 @@ class DiskThread(_ModelLoaderThread[DiskMsg]):
         If :class:`DiskThread` is processing this message, it means that the
         following has happened:
 
-        1. :class:`MainThread` sent :class:`ModelCacheToStageCmd` to :class:`DiskThread`.
+        1. :class:`DispatchThread` sent :class:`ModelCacheToStageCmd` to :class:`DiskThread`.
 
         2. :class:`DiskThread` determined that some or all of the files for the
            model requested in the :class:`ModelCacheToStageCmd` were missing or
@@ -602,7 +602,7 @@ class DiskThread(_ModelLoaderThread[DiskMsg]):
         the staging operation, and all model files are now staged. Therefore, do
         the following:
 
-        1. Send :class:`ModelStageCompleteMsg` to :class:`MainThread`.
+        1. Send :class:`ModelStageCompleteMsg` to :class:`DispatchThread`.
 
         2. Send :class:`ModelStageToCacheCmd` to :class:`DiskThread` (self), so
            that files downloaded by :class:`NetThread` in the
@@ -626,7 +626,7 @@ class DiskThread(_ModelLoaderThread[DiskMsg]):
         Remove requested :ref:`files <ModelRmFromStageCmd.local_paths>`, or, if
         :attr:`msg.local_paths <ModelRmFromStage.local_paths>` is ``None``,
         remove entire staging directory for requested model. Then, send
-        :class:`ModelUnstageCompleteMsg` to :class:`MainThread`.
+        :class:`ModelUnstageCompleteMsg` to :class:`DispatchThread`.
 
         '''
         if msg.local_paths is not None:
@@ -1096,13 +1096,13 @@ class TestCompletionTracker(unittest.TestCase):
         self.assertFalse(self.tracker.is_complete(ModelKey('b', None)))
 
 
-class TestMainThread(unittest.TestCase, _TestCaseThreadDataMixin):
+class TestDispatchThread(unittest.TestCase, _TestCaseThreadDataMixin):
     KEY: ModelKey = ModelKey('EleutherAI/pythia-160m', None)
     OP_ID: int = 0
 
     def setUp(self) -> None:
         self.set_up_thread_data()
-        self.main_thread: MainThread = MainThread(self.thread_data)
+        self.main_thread: DispatchThread = DispatchThread(self.thread_data)
         self.main_thread.start()
 
     def tearDown(self) -> None:
@@ -1783,7 +1783,7 @@ class TestIntegratedThreads(unittest.TestCase, _TestCaseThreadDataMixin, _TestCa
     def setUp(self) -> None:
         self.set_up_hf_hub_patchers()
         self.set_up_thread_data()
-        self.main_thread: MainThread = MainThread(self.thread_data)
+        self.main_thread: DispatchThread = DispatchThread(self.thread_data)
         self.net_thread: NetThread = NetThread(self.thread_data)
         self.disk_thread: DiskThread = DiskThread(self.thread_data)
 

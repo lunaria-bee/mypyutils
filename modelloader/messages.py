@@ -30,7 +30,7 @@ __all__ = (
     'ModelUnstageCompleteMsg',
     'ModelLoaderShutdownUrgency',
     'ModelLoaderShutdownCmd',
-    'MainMsg',
+    'DispatchMsg',
     'NetMsg',
     'DiskMsg',
     'ModelLoaderMsgWrapper',
@@ -52,32 +52,32 @@ _log = logging.getLogger(__name__)
 # Top level commands.
 @dataclass
 class ModelCacheCmd:
-    '''Client→:class:`MainThread`: Cache model identified by ``key``.'''
+    '''Client→:class:`DispatchThread`: Cache model identified by ``key``.'''
     op_id: int
     key: ModelKey
 
 @dataclass
 class ModelStageCmd:
-    '''Client→:class:`MainThread`: Stage model identified by ``key``.'''
+    '''Client→:class:`DispatchThread`: Stage model identified by ``key``.'''
     op_id: int
     key: ModelKey
 
 @dataclass
 class ModelRegisterForStageCompleteCmd:
-    '''Client→:class:`MainThread`: :meth:`~threading.Event.set()` ``event`` once
+    '''Client→:class:`DispatchThread`: :meth:`~threading.Event.set()` ``event`` once
     model identified by ``key`` has been staged.'''
     key: ModelKey
     event: Event
 
 @dataclass
 class ModelUnstageCmd:
-    '''Client→:class:`MainThread`: Unstage model identified by ``key``.'''
+    '''Client→:class:`DispatchThread`: Unstage model identified by ``key``.'''
     op_id: int
     key: ModelKey
 
 @dataclass
 class ModelDownloadForCachingCmd:
-    ''':class:`MainThread`→:class:`NetThread`: Download missing/dirty files for
+    ''':class:`DispatchThread`→:class:`NetThread`: Download missing/dirty files for
     model identified by ``key``, to be copied to cache.'''
     op_id: int
     key: ModelKey
@@ -102,7 +102,7 @@ class ModelDownloadForStagingCompleteMsg:
 
 @dataclass
 class ModelCacheToStageCmd:
-    ''':class:`MainThread`→:class:`DiskThread`: Copy files for model identified
+    ''':class:`DispatchThread`→:class:`DiskThread`: Copy files for model identified
     by ``key`` from cache to stage.'''
     op_id: int
     key: ModelKey
@@ -118,7 +118,7 @@ class ModelStageToCacheCmd:
 
 @dataclass
 class ModelRmFromStageCmd:
-    ''':class:`MainThread`→:class:`DiskThread`: Remove files for model
+    ''':class:`DispatchThread`→:class:`DiskThread`: Remove files for model
     identified by ``key`` from stage.'''
     op_id: int
     key: ModelKey
@@ -126,21 +126,21 @@ class ModelRmFromStageCmd:
 
 @dataclass
 class ModelCacheCompleteMsg:
-    ''':class:`DiskThread`→:class:`MainThread`: Signal completion of
+    ''':class:`DiskThread`→:class:`DispatchThread`: Signal completion of
     :class:`ModelCacheCmd`.'''
     op_id: int
     key: ModelKey
 
 @dataclass
 class ModelStageCompleteMsg:
-    ''':class:`DiskThread`→:class:`MainThread`: Signal completion of
+    ''':class:`DiskThread`→:class:`DispatchThread`: Signal completion of
     :class:`ModelStageCmd`.'''
     op_id: int
     key: ModelKey
 
 @dataclass
 class ModelUnstageCompleteMsg:
-    ''':class:`DiskThread`→:class:`MainThread`: Signal completion of
+    ''':class:`DiskThread`→:class:`DispatchThread`: Signal completion of
     :class:`ModelUnstageCmd`.'''
     op_id: int
     key: ModelKey
@@ -177,7 +177,7 @@ class ModelLoaderShutdownCmd:
     urgency: ModelLoaderShutdownUrgency
 
 
-type MainMsg = Union[
+type DispatchMsg = Union[
     ModelCacheCmd,
     ModelStageCmd,
     ModelUnstageCmd,
@@ -187,7 +187,7 @@ type MainMsg = Union[
     ModelUnstageCompleteMsg,
     ModelLoaderShutdownCmd,
 ]
-'''Messages that can be received by :class:`_MainThread`..'''
+'''Messages that can be received by :class:`_DispatchThread`..'''
 
 
 type NetMsg = Union[
