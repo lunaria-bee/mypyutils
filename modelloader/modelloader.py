@@ -59,6 +59,7 @@ class ModelLoader:
             stage_dir: Path | str,
             cache_dir: Optional[Path | str] = None,
             *,
+            daemonize: bool = False,
             excepthook: bool = False,
     ):
         ''':param stage_dir: Stage directory; see :ref:`module-level
@@ -67,6 +68,10 @@ class ModelLoader:
         :param cache_dir: Cache directory, defaults to
         :const:`huggingface_hub.constants.HF_HUB_CACHE`; see :ref:`module-level
         documentation <modelloader-intro>` for more.
+
+        :param daemonize:
+            Set ``daemon`` flag on all threads. See :class:`threading.Thread`
+            documentation for more.
 
         '''
         # TODO Way to set default model loading kwargs.
@@ -108,12 +113,21 @@ class ModelLoader:
         # TODO Number threads when more than one ModelLoader is present.
         self._thread_data: ThreadData = \
             ThreadData(self._cachedir, self._stagedir)
-        self._main_thread: DispatchThread = \
-            DispatchThread(self._thread_data, name="ModelLoader:DispatchThread")
-        self._net_thread: NetThread = \
-            NetThread(self._thread_data, name="ModelLoader:NetThread")
-        self._disk_thread: DiskThread = \
-            DiskThread(self._thread_data, name="ModelLoader:DiskThread")
+        self._main_thread: DispatchThread = DispatchThread(
+            self._thread_data,
+            name="ModelLoader:DispatchThread",
+            daemon=daemonize,
+        )
+        self._net_thread: NetThread = NetThread(
+            self._thread_data,
+            name="ModelLoader:NetThread",
+            daemon=daemonize,
+        )
+        self._disk_thread: DiskThread = DiskThread(
+            self._thread_data,
+            name="ModelLoader:DiskThread",
+            daemon=daemonize,
+        )
 
         self._main_thread.start()
         self._net_thread.start()
