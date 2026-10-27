@@ -113,7 +113,7 @@ class ModelLoader:
         # TODO Number threads when more than one ModelLoader is present.
         self._thread_data: ThreadData = \
             ThreadData(self._cachedir, self._stagedir)
-        self._main_thread: DispatchThread = DispatchThread(
+        self._dispatch_thread: DispatchThread = DispatchThread(
             self._thread_data,
             name="ModelLoader:DispatchThread",
             daemon=daemonize,
@@ -129,7 +129,7 @@ class ModelLoader:
             daemon=daemonize,
         )
 
-        self._main_thread.start()
+        self._dispatch_thread.start()
         self._net_thread.start()
         self._disk_thread.start()
 
@@ -376,7 +376,7 @@ class ModelLoader:
         Does not initiate shutdown process; use :meth:`shutdown()` for this.
 
         '''
-        self._main_thread.join()
+        self._dispatch_thread.join()
         self._net_thread.join()
         self._disk_thread.join()
 
