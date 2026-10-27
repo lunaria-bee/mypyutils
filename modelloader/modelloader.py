@@ -165,7 +165,7 @@ class ModelLoader:
 
         with self._next_op_id_lock:
             for key in keys:
-                self._thread_data.main_msgq.put_msg_from_client(
+                self._thread_data.dispatch_msgq.put_msg_from_client(
                     MSG_NORMAL_PRIORITY,
                     ModelCacheCmd(self._next_op_id, ModelKey.convert_from(key)),
                 )
@@ -188,7 +188,7 @@ class ModelLoader:
 
         with self._next_op_id_lock:
             for key in keys:
-                self._thread_data.main_msgq.put_msg_from_client(
+                self._thread_data.dispatch_msgq.put_msg_from_client(
                     MSG_NORMAL_PRIORITY,
                     ModelStageCmd(self._next_op_id, ModelKey.convert_from(key)),
                 )
@@ -316,7 +316,7 @@ class ModelLoader:
 
         If model is already staged, return immediately.
 
-        If model is not already staged, queue a stage command on the main
+        If model is not already staged, queue a stage command on the dispatch
         thread, register a stage complete event, and then wait for the event to
         be set. See
         :meth:`_DispatchThread._handle_model_register_for_stage_complete_cmd()`
@@ -329,7 +329,7 @@ class ModelLoader:
             _log.debug(f"{repr(key)} needs stage")
             self.stage(key)
             event = Event()
-            self._thread_data.main_msgq.put_msg_from_client(
+            self._thread_data.dispatch_msgq.put_msg_from_client(
                 MSG_HIGH_PRIORITY,
                 ModelRegisterForStageCompleteCmd(key, event),
             )
@@ -362,7 +362,7 @@ class ModelLoader:
             ):
                 priority = MSG_HIGH_PRIORITY
 
-        self._thread_data.main_msgq.put_msg_from_client(
+        self._thread_data.dispatch_msgq.put_msg_from_client(
             priority,
             ModelLoaderShutdownCmd(urgency),
         )

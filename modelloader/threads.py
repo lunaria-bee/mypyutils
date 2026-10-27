@@ -81,8 +81,8 @@ class ThreadData:
         field(default_factory=CompletionTracker)
     stage_complete: CompletionTracker = \
         field(default_factory=CompletionTracker)
-    main_msgq: ModelLoaderMessager[DispatchMsg] = \
-        field(default_factory=lambda: ModelLoaderMessager("main"))
+    dispatch_msgq: ModelLoaderMessager[DispatchMsg] = \
+        field(default_factory=lambda: ModelLoaderMessager("dispatch"))
     net_msgq: ModelLoaderMessager[NetMsg] = \
         field(default_factory=lambda: ModelLoaderMessager("net"))
     disk_msgq: ModelLoaderMessager[DiskMsg] = \
@@ -129,8 +129,6 @@ class DispatchThread(_ModelLoaderThread[DispatchMsg]):
     '''Thread that receives client commands and dispatches :class:`NetThread`
     and :class:`DiskThread` accordingly.
 
-    The main thread:
-
     - Acts as an interface between model loader internals and client code.
     - Updates the :attr:`ThreadData.cache_complete` and
       :attr:`ThreadData.stage_complete` bookkeeping variables.
@@ -145,7 +143,7 @@ class DispatchThread(_ModelLoaderThread[DispatchMsg]):
 
     @property
     def msgq(self) -> ModelLoaderMessager[DispatchMsg]:
-        return self.thread_data.main_msgq
+        return self.thread_data.dispatch_msgq
 
     def handle_msg(self, msg_wrapper: ModelLoaderMsgWrapper[DispatchMsg]) -> None:
         msg: DispatchMsg = msg_wrapper.content
@@ -368,7 +366,7 @@ class NetThread(_ModelLoaderThread[NetMsg]):
             )
         else:
             self.msgq.send_msg(
-                self.thread_data.main_msgq,
+                self.thread_data.dispatch_msgq,
                 MSG_HIGH_PRIORITY,
                 ModelCacheCompleteMsg(msg.op_id, msg.key),
             )
@@ -444,7 +442,6 @@ class DiskThread(_ModelLoaderThread[DiskMsg]):
             ModelStageToCacheCmd: self._handle_model_stage_to_cache_cmd,
             ModelDownloadForStagingCompleteMsg: self._handle_model_download_for_staging_complete_msg,
             ModelUnstageCmd: self._handle_model_rm_from_stage_cmd,
-            ModelLoaderShutdownCmd: self._handle_thread_shutdown_cmd,
         }[type(msg)](msg)
 
     def _handle_model_cache_to_stage_cmd(self, msg: ModelCacheToStageCmd):
@@ -518,9 +515,9 @@ class DiskThread(_ModelLoaderThread[DiskMsg]):
 
         if not filenames_for_dl:
             # Files have been copied to stage and none need to be downloaded, so
-            # report ModelStageCompleteMsg back to main thread.
+            # report ModelStageCompleteMsg back to DispatchThread.
             self.msgq.send_msg(
-                self.thread_data.main_msgq,
+                self.thread_data.dispatch_msgq,
                 MSG_HIGH_PRIORITY,
                 ModelStageCompleteMsg(msg.op_id, msg.key),
             )
@@ -560,7 +557,7 @@ class DiskThread(_ModelLoaderThread[DiskMsg]):
             self._rsync(local_paths, self._RsyncDirection.STAGE_TO_CACHE)
 
         self.msgq.send_msg(
-            self.thread_data.main_msgq,
+            self.thread_data.dispatch_msgq,
             MSG_HIGH_PRIORITY,
             ModelCacheCompleteMsg(msg.op_id, msg.key),
         )
@@ -610,7 +607,7 @@ class DiskThread(_ModelLoaderThread[DiskMsg]):
 
         '''
         self.msgq.send_msg(
-            self.thread_data.main_msgq,
+            self.thread_data.dispatch_msgq,
             MSG_HIGH_PRIORITY,
             ModelStageCompleteMsg(msg.op_id, msg.key),
         )
@@ -668,7 +665,7 @@ class DiskThread(_ModelLoaderThread[DiskMsg]):
         #     path.unlink(missing_ok=True)
 
         self.msgq.send_msg(
-            self.thread_data.main_msgq,
+            self.thread_data.dispatch_msgq,
             MSG_HIGH_PRIORITY,
             ModelUnstageCompleteMsg(msg.op_id, msg.key),
         )
@@ -1102,17 +1099,17 @@ class TestDispatchThread(unittest.TestCase, _TestCaseThreadDataMixin):
 
     def setUp(self) -> None:
         self.set_up_thread_data()
-        self.main_thread: DispatchThread = DispatchThread(self.thread_data)
-        self.main_thread.start()
+        self.dispatch_thread: DispatchThread = DispatchThread(self.thread_data)
+        self.dispatch_thread.start()
 
     def tearDown(self) -> None:
         self.thread_data.shutdown.set()
-        self.main_thread.join()
+        self.dispatch_thread.join()
         self.tear_down_thread_data()
 
     def test_model_cache_cmd_when_not_cached(self):
         # Send cache command.
-        self.thread_data.main_msgq.put_msg_from_client(
+        self.thread_data.dispatch_msgq.put_msg_from_client(
             MSG_NORMAL_PRIORITY,
             ModelCacheCmd(self.OP_ID, self.KEY),
         )
@@ -1127,12 +1124,12 @@ class TestDispatchThread(unittest.TestCase, _TestCaseThreadDataMixin):
         )
         msg: typing.Any = self.thread_data.disk_msgq.get_msg().content
         self.thread_data.disk_msgq.send_msg(
-            self.thread_data.main_msgq,
+            self.thread_data.dispatch_msgq,
             MSG_HIGH_PRIORITY,
             ModelCacheCompleteMsg(msg.op_id, msg.key),
         )
         # Check model is marked as cached.
-        _wait_for_empty(self.thread_data.main_msgq.queue)
+        _wait_for_empty(self.thread_data.dispatch_msgq.queue)
         self.assertTrue(
             self.thread_data.cache_complete.is_complete(self.KEY)
         )
@@ -1141,18 +1138,18 @@ class TestDispatchThread(unittest.TestCase, _TestCaseThreadDataMixin):
         # Mark model as cached.
         self.thread_data.cache_complete.mark_complete(self.KEY)
         # Send cache command.
-        self.thread_data.main_msgq.put_msg_from_client(
+        self.thread_data.dispatch_msgq.put_msg_from_client(
             MSG_NORMAL_PRIORITY,
             ModelCacheCmd(self.OP_ID, self.KEY),
         )
         # Verify no messages in system.
-        _wait_for_empty(self.thread_data.main_msgq.queue)
+        _wait_for_empty(self.thread_data.dispatch_msgq.queue)
         self.assertTrue(self.thread_data.net_msgq.queue.empty())
         self.assertTrue(self.thread_data.disk_msgq.queue.empty())
 
     def test_model_stage_cmd_when_not_staged(self):
         # Send stage command.
-        self.thread_data.main_msgq.put_msg_from_client(
+        self.thread_data.dispatch_msgq.put_msg_from_client(
             MSG_NORMAL_PRIORITY,
             ModelStageCmd(self.OP_ID, self.KEY),
         )
@@ -1161,12 +1158,12 @@ class TestDispatchThread(unittest.TestCase, _TestCaseThreadDataMixin):
         self.assertIsInstance(msg, ModelCacheToStageCmd)
         # Mock model staging process for cached model.
         self.thread_data.disk_msgq.send_msg(
-            self.thread_data.main_msgq,
+            self.thread_data.dispatch_msgq,
             MSG_HIGH_PRIORITY,
             ModelStageCompleteMsg(msg.op_id, msg.key),
         )
         # Check model is marked as staged.
-        _wait_for_empty(self.thread_data.main_msgq.queue)
+        _wait_for_empty(self.thread_data.dispatch_msgq.queue)
         self.assertTrue(
             self.thread_data.stage_complete.is_complete(self.KEY)
         )
@@ -1175,46 +1172,46 @@ class TestDispatchThread(unittest.TestCase, _TestCaseThreadDataMixin):
         # Mark model as staged.
         self.thread_data.stage_complete.mark_complete(self.KEY)
         # Send stage comand.
-        self.thread_data.main_msgq.put_msg_from_client(
+        self.thread_data.dispatch_msgq.put_msg_from_client(
             MSG_NORMAL_PRIORITY,
             ModelStageCmd(self.OP_ID, self.KEY),
         )
         # Verify no messages in system.
-        _wait_for_empty(self.thread_data.main_msgq.queue)
+        _wait_for_empty(self.thread_data.dispatch_msgq.queue)
         self.assertTrue(self.thread_data.net_msgq.queue.empty())
         self.assertTrue(self.thread_data.disk_msgq.queue.empty())
 
     def test_model_register_for_stage_complete_cmd_with_single_model_and_single_event_when_model_is_not_staged(self):
        # Send register command.
         event = Event()
-        self.thread_data.main_msgq.put_msg_from_client(
+        self.thread_data.dispatch_msgq.put_msg_from_client(
             MSG_NORMAL_PRIORITY,
             ModelRegisterForStageCompleteCmd(self.KEY, event),
         )
         # Check event is not set.
-        _wait_for_empty(self.thread_data.main_msgq.queue)
+        _wait_for_empty(self.thread_data.dispatch_msgq.queue)
         self.assertFalse(event.is_set())
         # Mock model staging.
         self._mock_model_staging(self.OP_ID, self.KEY)
         # Check event is set.
-        _wait_for_empty(self.thread_data.main_msgq.queue)
+        _wait_for_empty(self.thread_data.dispatch_msgq.queue)
         self.assertTrue(event.is_set())
 
     def test_model_register_for_stage_complete_cmd_with_single_model_and_multiple_events_when_model_is_not_staged(self):
         # Register events.
         events = [Event(), Event()]
         for e in events:
-            self.thread_data.main_msgq.put_msg_from_client(
+            self.thread_data.dispatch_msgq.put_msg_from_client(
                 MSG_NORMAL_PRIORITY,
                 ModelRegisterForStageCompleteCmd(self.KEY, e)
             )
-        _wait_for_empty(self.thread_data.main_msgq.queue)
+        _wait_for_empty(self.thread_data.dispatch_msgq.queue)
         # Check events not set.
         self.assertFalse(any(e.is_set() for e in events))
         # Mock model staging process.
         self._mock_model_staging(self.OP_ID, self.KEY)
         # Check events are set.
-        _wait_for_empty(self.thread_data.main_msgq.queue)
+        _wait_for_empty(self.thread_data.dispatch_msgq.queue)
         self.assertTrue(all(e.is_set() for e in events))
 
     def test_model_register_for_stage_complete_cmd_with_multiple_models_and_single_event_per_model_when_models_are_not_staged(self):
@@ -1224,12 +1221,12 @@ class TestDispatchThread(unittest.TestCase, _TestCaseThreadDataMixin):
         cmd_id_2 = self.OP_ID + 1
         # Register events.
         event1 = Event()
-        self.thread_data.main_msgq.put_msg_from_client(
+        self.thread_data.dispatch_msgq.put_msg_from_client(
             MSG_NORMAL_PRIORITY,
             ModelRegisterForStageCompleteCmd(key1, event1),
         )
         event2 = Event()
-        self.thread_data.main_msgq.put_msg_from_client(
+        self.thread_data.dispatch_msgq.put_msg_from_client(
             MSG_NORMAL_PRIORITY,
             ModelRegisterForStageCompleteCmd(key2, event2),
         )
@@ -1239,13 +1236,13 @@ class TestDispatchThread(unittest.TestCase, _TestCaseThreadDataMixin):
         # Mock model staging for key1.
         self._mock_model_staging(cmd_id_1, key1)
         # Check only event1 set.
-        _wait_for_empty(self.thread_data.main_msgq.queue)
+        _wait_for_empty(self.thread_data.dispatch_msgq.queue)
         self.assertTrue(event1.is_set())
         self.assertFalse(event2.is_set())
         # Mock model staging for key2.
         self._mock_model_staging(cmd_id_2, key2)
         # Check both events set.
-        _wait_for_empty(self.thread_data.main_msgq.queue)
+        _wait_for_empty(self.thread_data.dispatch_msgq.queue)
         self.assertTrue(event1.is_set())
         self.assertTrue(event2.is_set())
 
@@ -1257,13 +1254,13 @@ class TestDispatchThread(unittest.TestCase, _TestCaseThreadDataMixin):
         # Register events.
         events1 = [Event(), Event()]
         for e in events1:
-            self.thread_data.main_msgq.put_msg_from_client(
+            self.thread_data.dispatch_msgq.put_msg_from_client(
                 MSG_NORMAL_PRIORITY,
                 ModelRegisterForStageCompleteCmd(key1, e)
             )
         events2 = [Event(), Event()]
         for e in events2:
-            self.thread_data.main_msgq.put_msg_from_client(
+            self.thread_data.dispatch_msgq.put_msg_from_client(
                 MSG_NORMAL_PRIORITY,
                 ModelRegisterForStageCompleteCmd(key2, e)
             )
@@ -1273,13 +1270,13 @@ class TestDispatchThread(unittest.TestCase, _TestCaseThreadDataMixin):
         # Mock model staging for key1.
         self._mock_model_staging(cmd_id_1, key1)
         # Check only events1 set.
-        _wait_for_empty(self.thread_data.main_msgq.queue)
+        _wait_for_empty(self.thread_data.dispatch_msgq.queue)
         self.assertTrue(all(e.is_set() for e in events1))
         self.assertFalse(any(e.is_set() for e in events2))
         # Mock model staging for key2.
         self._mock_model_staging(cmd_id_2, key2)
         # Check all events set.
-        _wait_for_empty(self.thread_data.main_msgq.queue)
+        _wait_for_empty(self.thread_data.dispatch_msgq.queue)
         self.assertTrue(all(e.is_set() for e in events1))
         self.assertTrue(all(e.is_set() for e in events2))
 
@@ -1288,11 +1285,11 @@ class TestDispatchThread(unittest.TestCase, _TestCaseThreadDataMixin):
         self._mock_model_staging(self.OP_ID, self.KEY)
         # Send register command.
         event = Event()
-        self.thread_data.main_msgq.put_msg_from_client(
+        self.thread_data.dispatch_msgq.put_msg_from_client(
             MSG_NORMAL_PRIORITY,
             ModelRegisterForStageCompleteCmd(self.KEY, event),
         )
-        _wait_for_empty(self.thread_data.main_msgq.queue)
+        _wait_for_empty(self.thread_data.dispatch_msgq.queue)
         # Verify no messages in system.
         self.assertTrue(self.thread_data.net_msgq.queue.empty())
         self.assertTrue(self.thread_data.disk_msgq.queue.empty())
@@ -1305,11 +1302,11 @@ class TestDispatchThread(unittest.TestCase, _TestCaseThreadDataMixin):
         # Register events.
         events = [Event(), Event()]
         for e in events:
-            self.thread_data.main_msgq.put_msg_from_client(
+            self.thread_data.dispatch_msgq.put_msg_from_client(
                 MSG_NORMAL_PRIORITY,
                 ModelRegisterForStageCompleteCmd(self.KEY, e)
             )
-        _wait_for_empty(self.thread_data.main_msgq.queue)
+        _wait_for_empty(self.thread_data.dispatch_msgq.queue)
         # Verify no messages in system.
         self.assertTrue(self.thread_data.net_msgq.queue.empty())
         self.assertTrue(self.thread_data.disk_msgq.queue.empty())
@@ -1318,13 +1315,13 @@ class TestDispatchThread(unittest.TestCase, _TestCaseThreadDataMixin):
 
     def _mock_model_staging(self, cmd_id: int, key: ModelKey):
         # Mock full model staging without any unit test asserts.
-        self.thread_data.main_msgq.put_msg_from_client(
+        self.thread_data.dispatch_msgq.put_msg_from_client(
             MSG_NORMAL_PRIORITY,
             ModelStageCmd(cmd_id, key),
         )
         msg: typing.Any = self.thread_data.disk_msgq.get_msg().content
         self.thread_data.disk_msgq.send_msg(
-            self.thread_data.main_msgq,
+            self.thread_data.dispatch_msgq,
             MSG_HIGH_PRIORITY,
             ModelStageCompleteMsg(msg.op_id, msg.key),
         )
@@ -1349,7 +1346,7 @@ class TestNetThread(unittest.TestCase, _TestCaseThreadDataMixin, _TestCaseMockHf
     def test_model_download_for_caching_cmd_when_no_files_cached(self):
         # Send command.
         msg = ModelDownloadForCachingCmd(self.OP_ID, self.KEY, None)
-        self.thread_data.main_msgq.send_msg(
+        self.thread_data.dispatch_msgq.send_msg(
             self.thread_data.net_msgq,
             MSG_NORMAL_PRIORITY,
             msg,
@@ -1384,7 +1381,7 @@ class TestNetThread(unittest.TestCase, _TestCaseThreadDataMixin, _TestCaseMockHf
             )
         # Send command.
         msg = ModelDownloadForCachingCmd(self.OP_ID, self.KEY, None)
-        self.thread_data.main_msgq.send_msg(
+        self.thread_data.dispatch_msgq.send_msg(
             self.thread_data.net_msgq,
             MSG_NORMAL_PRIORITY,
             msg,
@@ -1420,13 +1417,13 @@ class TestNetThread(unittest.TestCase, _TestCaseThreadDataMixin, _TestCaseMockHf
             )
         # Send command.
         msg = ModelDownloadForCachingCmd(self.OP_ID, self.KEY, None)
-        self.thread_data.main_msgq.send_msg(
+        self.thread_data.dispatch_msgq.send_msg(
             self.thread_data.net_msgq,
             MSG_NORMAL_PRIORITY,
             msg,
         )
-        # Check main thread msgq for ModelCacheCompleteMsg.
-        msg = self.thread_data.main_msgq.get_msg().content
+        # Check dispatch thread msgq for ModelCacheCompleteMsg.
+        msg = self.thread_data.dispatch_msgq.get_msg().content
         self.assertIsInstance(msg, ModelCacheCompleteMsg)
         # Verify that hf_hub_download was NOT called.
         hfhub.hf_hub_download.assert_not_called()
@@ -1472,7 +1469,7 @@ class TestNetThread(unittest.TestCase, _TestCaseThreadDataMixin, _TestCaseMockHf
     def _activity_flush(self):
         # Push dummy message to net thread and then wait for queue to empty, to
         # ensure operations are complete.
-        self.thread_data.main_msgq.send_msg(
+        self.thread_data.dispatch_msgq.send_msg(
             self.thread_data.net_msgq,
             MSG_NORMAL_PRIORITY,
             ModelDownloadForCachingCmd(self.OP_ID+1, ModelKey('arg', 'bla'), []),
@@ -1498,7 +1495,7 @@ class TestDiskThread(unittest.TestCase, _TestCaseThreadDataMixin, _TestCaseMockH
 
     def test_model_cache_to_stage_cmd_when_no_files_cached(self):
         # Send command.
-        self.thread_data.main_msgq.send_msg(
+        self.thread_data.dispatch_msgq.send_msg(
             self.thread_data.disk_msgq,
             MSG_NORMAL_PRIORITY,
             ModelCacheToStageCmd(self.OP_ID, self.KEY, None),
@@ -1533,7 +1530,7 @@ class TestDiskThread(unittest.TestCase, _TestCaseThreadDataMixin, _TestCaseMockH
                 cache_dir=self.thread_data.cachedir,
             )
         # Send command.
-        self.thread_data.main_msgq.send_msg(
+        self.thread_data.dispatch_msgq.send_msg(
             self.thread_data.disk_msgq,
             MSG_NORMAL_PRIORITY,
             ModelCacheToStageCmd(self.OP_ID, self.KEY, None),
@@ -1566,7 +1563,7 @@ class TestDiskThread(unittest.TestCase, _TestCaseThreadDataMixin, _TestCaseMockH
                 cache_dir=self.thread_data.cachedir,
             )
         # Send command.
-        self.thread_data.main_msgq.send_msg(
+        self.thread_data.dispatch_msgq.send_msg(
             self.thread_data.disk_msgq,
             MSG_NORMAL_PRIORITY,
             ModelCacheToStageCmd(self.OP_ID, self.KEY, None),
@@ -1585,8 +1582,8 @@ class TestDiskThread(unittest.TestCase, _TestCaseThreadDataMixin, _TestCaseMockH
         while not self.thread_data.net_msgq.queue.empty():
             msg: typing.Any = self.thread_data.net_msgq.get_msg().content
             self.assertNotEqual(msg.op_id, self.OP_ID)
-        # Check main thread msgq for ModelStageCompleteMsg.
-        msg = self.thread_data.main_msgq.get_msg().content
+        # Check dispatch thread msgq for ModelStageCompleteMsg.
+        msg = self.thread_data.dispatch_msgq.get_msg().content
         self.assertIsInstance(msg, ModelStageCompleteMsg)
 
     def test_model_stage_to_cache_cmd_with_unset_local_paths_field(self):
@@ -1613,8 +1610,8 @@ class TestDiskThread(unittest.TestCase, _TestCaseThreadDataMixin, _TestCaseMockH
             self.KEY.revision,
             self.MOCK_FILENAMES,
         ))
-        # Check main thread msgq for ModelCacheCompleteMsg.
-        msg = self.thread_data.main_msgq.get_msg().content
+        # Check dispatch thread msgq for ModelCacheCompleteMsg.
+        msg = self.thread_data.dispatch_msgq.get_msg().content
         self.assertIsInstance(msg, ModelCacheCompleteMsg)
 
     def test_model_stage_to_cache_cmd_with_set_local_paths_field(self):
@@ -1685,8 +1682,8 @@ class TestDiskThread(unittest.TestCase, _TestCaseThreadDataMixin, _TestCaseMockH
                 self.MOCK_FILENAMES,
             )),
         )
-        # Check main thread msgq for ModelCacheCompleteMsg.
-        msg = self.thread_data.main_msgq.get_msg().content
+        # Check dispatch thread msgq for ModelCacheCompleteMsg.
+        msg = self.thread_data.dispatch_msgq.get_msg().content
         self.assertIsInstance(msg, ModelCacheCompleteMsg)
 
     def test_model_download_for_staging_complete_msg(self):
@@ -1739,8 +1736,8 @@ class TestDiskThread(unittest.TestCase, _TestCaseThreadDataMixin, _TestCaseMockH
             self.KEY.revision,
             self.MOCK_FILENAMES,
         ))
-        # Check main thread msgq for ModelStageCompleteMsg.
-        msg = self.thread_data.main_msgq.get_msg().content
+        # Check dispatch thread msgq for ModelStageCompleteMsg.
+        msg = self.thread_data.dispatch_msgq.get_msg().content
         self.assertIsInstance(msg, ModelStageCompleteMsg)
 
     def test_rsync_sigterm_on_shutdown(self):
@@ -1771,7 +1768,7 @@ class TestDiskThread(unittest.TestCase, _TestCaseThreadDataMixin, _TestCaseMockH
     def _activity_flush(self):
         # Push dummy message to disk thread and then wait for queue to empty, to
         # ensure rsync operations are complete.
-        self.thread_data.main_msgq.send_msg(
+        self.thread_data.dispatch_msgq.send_msg(
             self.thread_data.disk_msgq,
             MSG_NORMAL_PRIORITY,
             ModelCacheToStageCmd(self.OP_ID+1, ModelKey('arg', 'bla'), None),
@@ -1824,7 +1821,7 @@ class TestIntegratedThreads(unittest.TestCase, _TestCaseThreadDataMixin, _TestCa
     #                     thread.handle_msg(thread.msgq.get_msg(timeout=MAX_BLOCK_SECS))
     #                 except queue.Empty:
     #                     pass
-    #     # Verify only op two cmd on main thread msgq.
+    #     # Verify only op two cmd on dispatch thread msgq.
     #     main_msg: typing.Any = self.main_thread.msgq.get_msg().content
     #     self.assertEqual(
     #         main_msg,
