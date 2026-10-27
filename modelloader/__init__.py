@@ -221,10 +221,17 @@ from .modelloader import (
     ModelLoaderCmdAfterShutdownError,
 )
 
+from . import messages, modelkey, modelloader, threads, util
+
 __all__ = (
     'ModelLoader',
     'ModelKey',
     'KeyLike',
     'ModelLoaderShutdownUrgency',
     'ModelLoaderCmdAfterShutdownError',
+    'messages',
+    'modelkey',
+    'modelloader',
+    'threads',
+    'util',
 )

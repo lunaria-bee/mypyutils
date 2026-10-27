@@ -97,8 +97,10 @@ class ThreadData:
 
 
 class _ModelLoaderThread[M](Thread, ABC):
-    def __init__(self, thread_data: ThreadData):
-        super().__init__()
+    '''TODO'''
+
+    def __init__(self, thread_data: ThreadData, *args, **kwargs):
+        super().__init__(*args, **kwargs)
         self.thread_data: ThreadData = thread_data
 
     @property
@@ -113,11 +115,14 @@ class _ModelLoaderThread[M](Thread, ABC):
     def run(self):
         while not self.thread_data.shutdown.is_set():
             try:
-                self.handle_msg(self.msgq.get_msg(timeout=MAX_BLOCK_SECS))
+                wrapped_msg: ModelLoaderMsgWrapper[M] = \
+                    self.msgq.get_msg(timeout=MAX_BLOCK_SECS)
             except queue.Empty:
                 # We don't actually do anything here, the timeout is just to
                 # make sure shutdown event gets rechecked.
                 pass
+            else:
+                self.handle_msg(wrapped_msg)
 
 
 # TODO Rename: `MainThread` is also the name/type for Python's default thread.
@@ -132,8 +137,8 @@ class MainThread(_ModelLoaderThread[MainMsg]):
 
     '''
 
-    def __init__(self, thread_data: ThreadData):
-        super().__init__(thread_data)
+    def __init__(self, thread_data: ThreadData, *args, **kwargs):
+        super().__init__(thread_data, *args, **kwargs)
         self.outstanding_ops: set[int] = set()
         self.stage_complete_registry: dict[ModelKey, list[Event]] = dict()
         self.prepare_shutdown: bool = False
@@ -162,13 +167,15 @@ class MainThread(_ModelLoaderThread[MainMsg]):
 
         '''
         if self.thread_data.cache_complete.is_complete(msg.key):
-            _log.debug(f"{msg.key} cached: do nothing")
+            _log.info(f"{msg.key} cached: do nothing")
         elif self.prepare_shutdown:
             _log.error(
                 f"Received {repr(msg)} while preparing to exit: "
                 f"do nothing"
             )
         else:
+            if msg.op_id >= 0:
+                _log.info(f"Begin cache {msg.key} (op {msg.op_id})")
             self.msgq.send_msg(
                 self.thread_data.net_msgq,
                 MSG_NORMAL_PRIORITY,
@@ -184,13 +191,15 @@ class MainThread(_ModelLoaderThread[MainMsg]):
 
         '''
         if self.thread_data.stage_complete.is_complete(msg.key):
-            _log.debug(f"{msg.key} staged: do nothing")
+            _log.info(f"{msg.key} staged: do nothing")
         elif self.prepare_shutdown:
             _log.error(
                 f"Received {repr(msg)} while preparing to exit: "
                 f"do nothing"
             )
         else:
+            if msg.op_id >= 0:
+                _log.info(f"Begin stage {msg.key} (op {msg.op_id})")
             self.msgq.send_msg(
                 self.thread_data.disk_msgq,
                 MSG_NORMAL_PRIORITY,
@@ -237,7 +246,11 @@ class MainThread(_ModelLoaderThread[MainMsg]):
         :attr:`~ThreadData.cache_complete`.
 
         '''
+        if msg.op_id >= 0:
+            _log.info(f"End cache {msg.key} (op {msg.op_id})")
+
         self.thread_data.cache_complete.mark_complete(msg.key)
+
         self._resolve_op(msg.op_id)
 
     def _handle_model_stage_complete_msg(self, msg: ModelStageCompleteMsg) -> None:
@@ -251,6 +264,9 @@ class MainThread(_ModelLoaderThread[MainMsg]):
         .. _msg.key: ModelStageCompleteMsg.key
 
         '''
+        if msg.op_id >= 0:
+            _log.info(f"End stage {msg.key} (op {msg.op_id})")
+
         self.thread_data.stage_complete.mark_complete(msg.key)
 
         # Notify registered events.
@@ -301,10 +317,16 @@ class MainThread(_ModelLoaderThread[MainMsg]):
                 self._do_shutdown()
 
     def _init_op(self, op_id: int):
-        self.outstanding_ops.add(op_id)
+        _log.debug(f"op_id={op_id}")
+        if op_id >= 0:
+            self.outstanding_ops.add(op_id)
+        _log.debug(f"outstanding_ops={repr(self.outstanding_ops)}")
 
     def _resolve_op(self, op_id: int):
-        self.outstanding_ops.remove(op_id)
+        _log.debug(f"op_id={op_id}")
+        if op_id >= 0:
+            self.outstanding_ops.remove(op_id)
+        _log.debug(f"outstanding_ops={repr(self.outstanding_ops)}")
 
         if self.prepare_shutdown and not self.outstanding_ops:
             self._do_shutdown()
@@ -373,6 +395,8 @@ class NetThread(_ModelLoaderThread[NetMsg]):
 
     def _download(self, msg) -> list[str]:
         '''Download files required to handle ``msg`` from HuggingFace hub.'''
+        _log.info(f"Begin download {msg.key} (op {msg.op_id})")
+
         if msg.filenames is not None:
             # Download files specified in message.
             files_to_dl: set[str] = set(msg.filenames)
@@ -400,6 +424,8 @@ class NetThread(_ModelLoaderThread[NetMsg]):
                 filename=filename,
             ) for filename in files_to_dl
         ]
+
+        _log.info(f"End download {msg.key} (op {msg.op_id})")
 
         return local_paths
 
@@ -438,21 +464,39 @@ class DiskThread(_ModelLoaderThread[DiskMsg]):
         :class:`ModelStageCompleteMsg` to :class:`MainThread`.
 
         '''
-        # TODO Handle msg.filenames?
+        # TODO Check thread_data.stage_complete and exit early on True.
 
+        # TODO Handle msg.filenames?
+        _log.info(f"Begin cache-to-stage {msg.key} (op {msg.op_id})")
+
+        file_infos: list[hfhub.DryRunFileInfos] = hfhub.snapshot_download(
+            repo_id=msg.key.hf_path,
+            repo_type='model',
+            revision=msg.key.revision,
+            cache_dir=self.thread_data.cachedir,
+            dry_run=True,
+        )
         filenames_for_dl: list[str] = []
         local_paths_for_stage: list[str] = []
-        for f in hfhub.snapshot_download(
-                repo_id=msg.key.hf_path,
-                repo_type='model',
-                revision=msg.key.revision,
-                cache_dir=self.thread_data.cachedir,
-                dry_run=True,
-        ):
-            if f.will_download:
+        for f in file_infos:
+            if f.will_download or not os.path.exists(f.local_path):
                 filenames_for_dl.append(f.filename)
             else:
                 local_paths_for_stage.append(f.local_path)
+
+        # Sanity check: All files for stage exist in cache.
+        missing_stage_paths: list[str] = [
+            p for p in local_paths_for_stage
+            if not os.path.exists(p)
+        ]
+        if missing_stage_paths:
+            raise RuntimeError(
+                f"Attempting to stage missing files "
+                f"{', '.join(repr(p) for p in local_paths_for_stage)}"
+                f"\nfilenames_for_dl={repr(filenames_for_dl)}"
+                f"\nlocal_paths_for_stage={repr(local_paths_for_stage)}"
+                f"\nfile_infos={repr(file_infos)}"
+            )
 
         if filenames_for_dl:
             # Tell net thread to download missing/dirty files and report back
@@ -464,6 +508,10 @@ class DiskThread(_ModelLoaderThread[DiskMsg]):
             )
 
         if local_paths_for_stage:
+            ref_path: str = self._ref_path(msg.key)
+            if os.path.exists(ref_path):
+                local_paths_for_stage.append(ref_path)
+
             # Stage files that are already cached.
             _log.debug(f"staging {local_paths_for_stage}")
             self._rsync(local_paths_for_stage, self._RsyncDirection.CACHE_TO_STAGE)
@@ -477,6 +525,8 @@ class DiskThread(_ModelLoaderThread[DiskMsg]):
                 ModelStageCompleteMsg(msg.op_id, msg.key),
             )
 
+        _log.info(f"End cache-to-stage {msg.key} (op {msg.op_id})")
+
     def _handle_model_stage_to_cache_cmd(self, msg: ModelStageToCacheCmd):
         '''Handle :class:`ModelStageToCacheCmd`.
 
@@ -485,6 +535,10 @@ class DiskThread(_ModelLoaderThread[DiskMsg]):
         :class:`MainThread`.
 
         '''
+        # TODO Check thread_data.cache_complete and exit early on True.
+
+        _log.info(f"Begin stage-to-cache {msg.key} (op {msg.op_id})")
+
         if msg.local_paths is not None:
             # Copy files specified in message.
             local_paths: set[str] = set(msg.local_paths)
@@ -510,6 +564,8 @@ class DiskThread(_ModelLoaderThread[DiskMsg]):
             MSG_HIGH_PRIORITY,
             ModelCacheCompleteMsg(msg.op_id, msg.key),
         )
+
+        _log.info(f"End stage-to-cache {msg.key} (op {msg.op_id})")
 
     def _handle_model_download_for_staging_complete_msg(
             self,
@@ -561,7 +617,7 @@ class DiskThread(_ModelLoaderThread[DiskMsg]):
         self.msgq.send_msg(
             self.msgq,
             MSG_HIGH_PRIORITY,
-            ModelStageToCacheCmd(msg.op_id, msg.key, msg.local_paths),
+            ModelStageToCacheCmd(-1, msg.key, msg.local_paths),
         )
 
     def _handle_model_rm_from_stage_cmd(self, msg: ModelRmFromStageCmd):
@@ -634,13 +690,15 @@ class DiskThread(_ModelLoaderThread[DiskMsg]):
             _log.debug("local_paths empty, returning")
             return
 
+        source: Path
+        dest: Path
         match direction:
             case self._RsyncDirection.CACHE_TO_STAGE:
-                source: Path = self.thread_data.cachedir
-                dest: Path = self.thread_data.stagedir
+                source = self.thread_data.cachedir
+                dest = self.thread_data.stagedir
             case self._RsyncDirection.STAGE_TO_CACHE:
-                source: Path = self.thread_data.stagedir
-                dest: Path = self.thread_data.cachedir
+                source = self.thread_data.stagedir
+                dest = self.thread_data.cachedir
 
         # Build a list of paths to copy, symlinks, targets, and intermediary links.
         paths_to_process: list[Path] = [Path(p) for p in local_paths]
@@ -705,6 +763,22 @@ class DiskThread(_ModelLoaderThread[DiskMsg]):
         _log.debug(f"rsync output:\n{rsync_proc.stdout}")
 
         return rsync_proc
+
+    def _ref_path(self, key: ModelKey) -> str:
+        repo_folder_name: str = hfhub.file_download.repo_folder_name(
+            repo_id=key.hf_path,
+            repo_type='model',
+        )
+        return os.path.join(
+            self.thread_data.cachedir,
+            repo_folder_name,
+            'refs',
+            key.revision or hfhub.constants.DEFAULT_REVISION,
+        )
+
+        storage_dir: str = \
+            os.path.join(self.thread_data.cache_dir, repo_folder_name)
+        return
 
 
 import unittest, unittest.mock
