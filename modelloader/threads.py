@@ -345,7 +345,6 @@ class NetThread(_ModelLoaderThread[NetMsg]):
         {
             ModelDownloadForCachingCmd: self._handle_model_download_for_caching_cmd,
             ModelDownloadForStagingCmd: self._handle_model_download_for_staging_cmd,
-            ModelLoaderShutdownCmd: self._handle_thread_shutdown_cmd,
         }[type(msg)](msg)
 
     def _handle_model_download_for_caching_cmd(self, msg) -> None:
@@ -386,10 +385,6 @@ class NetThread(_ModelLoaderThread[NetMsg]):
             MSG_HIGH_PRIORITY,
             ModelDownloadForStagingCompleteMsg(msg.op_id, msg.key, local_paths),
         )
-
-    def _handle_thread_shutdown_cmd(self, _: ModelLoaderShutdownCmd):
-        '''Handle :class:`ModelLoaderShutdownCmd`.'''
-        pass # TODO Delete: Thread shutdown is handled by main thread only.
 
     def _download(self, msg) -> list[str]:
         '''Download files required to handle ``msg`` from HuggingFace hub.'''
@@ -669,10 +664,6 @@ class DiskThread(_ModelLoaderThread[DiskMsg]):
             MSG_HIGH_PRIORITY,
             ModelUnstageCompleteMsg(msg.op_id, msg.key),
         )
-
-    def _handle_thread_shutdown_cmd(self, _: ModelLoaderShutdownCmd):
-        '''Handle :class:`ModelLoaderShutdownCmd`.'''
-        pass # TODO Delete: Thread shutdown is handled by main thread only.
 
     class _RsyncDirection(enum.Enum):
         CACHE_TO_STAGE = enum.auto()

@@ -193,7 +193,6 @@ type DispatchMsg = Union[
 type NetMsg = Union[
     ModelDownloadForCachingCmd,
     ModelDownloadForStagingCmd,
-    ModelLoaderShutdownCmd,
 ]
 '''Messages that can be received by :class:`_NetThread`.'''
 
@@ -203,7 +202,6 @@ type DiskMsg = Union[
     ModelStageToCacheCmd,
     ModelDownloadForStagingCompleteMsg,
     ModelRmFromStageCmd,
-    ModelLoaderShutdownCmd,
 ]
 '''Messages that can be received by :class:`_DiskThread`.'''
 
