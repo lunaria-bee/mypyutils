@@ -87,7 +87,7 @@ class ThreadData:
         field(default_factory=lambda: ModelLoaderMessager("net"))
     disk_msgq: ModelLoaderMessager[DiskMsg] = \
         field(default_factory=lambda: ModelLoaderMessager("disk"))
-    shutdown: Event = Event()
+    shutdown: Event = field(default_factory=Event)
 
 
 # TODO Clean up:
