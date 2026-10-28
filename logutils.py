@@ -1,8 +1,8 @@
 '''Logging utilities.'''
 
-__all__ = ('get_format_kwargs',)
+__all__ = ('get_format_str',)
 
-def get_format_kwargs(
+def get_format_str(
         *,
         levelname: bool = True,
         levelno: bool = False,
@@ -16,7 +16,7 @@ def get_format_kwargs(
         filename: bool = True,
         funcName: bool = True,
         lineno: bool = True,
-) -> dict[str, str]:
+) -> str:
     '''Create a dictionary of kwargs to pass to :func:`logging.basicConfig` to
     format log entries the way I like them.
 
@@ -82,7 +82,4 @@ def get_format_kwargs(
         if lineno and not (pathname or filename):
             prefix_elts[-1] += ':{lineno}'
 
-    return {
-        'style': '{',
-        'format': '[{}] {{message}}'.format(' '.join(prefix_elts)),
-    }
+    return '[{}] {{message}}'.format(' '.join(prefix_elts))
