@@ -6,10 +6,12 @@
 
 # TODO Replace requirements.txt with pyproject.toml.
 
+from . import logutils
 from . import modelloader
 from . import timer
 
 __all__ = (
+    'logutils',
     'modelloader',
     'timer',
 )

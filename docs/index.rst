@@ -9,5 +9,6 @@ mypyutils
 .. toctree::
    :maxdepth: 2
 
+   autoapi/mypyutils/logutils/index
    autoapi/mypyutils/modelloader/index
    autoapi/mypyutils/timer/index
